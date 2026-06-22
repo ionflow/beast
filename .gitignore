@@ -1,0 +1,11 @@
+alien-noir
+node_modules
+dist
+build
+coverage
+.DS_Store
+.turbo
+.vite
+.playwright-cli
+*.log
+apps/desktop/src-tauri/target

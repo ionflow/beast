@@ -1,0 +1,1 @@
+export { BeastApp } from "./BeastApp";

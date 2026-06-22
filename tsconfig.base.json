@@ -1,0 +1,27 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "useDefineForClassFields": true,
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "allowJs": false,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "strict": true,
+    "forceConsistentCasingInFileNames": true,
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "jsx": "react-jsx",
+    "noEmit": true,
+    "baseUrl": ".",
+    "paths": {
+      "@beast/core": ["packages/core/src/index.ts"],
+      "@beast/editor": ["packages/editor/src/index.tsx"],
+      "@beast/storage": ["packages/storage/src/index.ts"],
+      "@beast/ui": ["packages/ui/src/index.ts"],
+      "@beast/ui/styles.css": ["packages/ui/src/styles.css"]
+    }
+  }
+}
