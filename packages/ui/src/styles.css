@@ -45,7 +45,7 @@ input {
 
 .beast-toolbar {
   display: grid;
-  grid-template-columns: auto minmax(180px, 360px) 1fr;
+  grid-template-columns: auto auto minmax(180px, 360px) 1fr;
   align-items: center;
   gap: 12px;
   padding: 8px 12px;
@@ -54,6 +54,7 @@ input {
 }
 
 .beast-file-actions,
+.beast-layout-actions,
 .beast-command-actions {
   display: flex;
   align-items: center;
@@ -64,6 +65,14 @@ input {
   justify-content: flex-end;
   min-width: 0;
   overflow-x: auto;
+}
+
+.beast-command-divider {
+  width: 1px;
+  height: 22px;
+  margin: 0 5px;
+  flex: 0 0 auto;
+  background: var(--beast-border);
 }
 
 .beast-icon-button {
@@ -81,6 +90,44 @@ input {
 .beast-icon-button:hover {
   border-color: var(--beast-border);
   background: var(--beast-panel-strong);
+}
+
+.beast-icon-button[data-pressed="true"] {
+  border-color: rgba(23, 79, 91, 0.24);
+  color: var(--beast-scene);
+  background: rgba(23, 79, 91, 0.09);
+}
+
+.beast-tooltip {
+  position: fixed;
+  z-index: 1000;
+  max-width: 180px;
+  transform: translateX(-50%);
+  border: 1px solid rgba(25, 23, 21, 0.16);
+  border-radius: 6px;
+  padding: 5px 8px;
+  color: #fffdf8;
+  background: rgba(25, 23, 21, 0.94);
+  box-shadow: 0 8px 20px rgba(25, 23, 21, 0.16);
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.2;
+  pointer-events: none;
+  text-align: center;
+  white-space: nowrap;
+  animation: beast-tooltip-in 60ms ease-out;
+}
+
+@keyframes beast-tooltip-in {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(-2px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
 }
 
 .beast-icon-button:focus-visible,
@@ -102,21 +149,72 @@ input {
 
 .beast-workspace {
   display: grid;
-  grid-template-columns: minmax(180px, 240px) minmax(0, 1fr) minmax(260px, 34vw);
+  grid-template-columns: minmax(180px, 240px) minmax(0, 1fr) minmax(280px, var(--right-panel-width, 420px));
   min-height: 0;
 }
 
+.beast-workspace.is-outline-hidden {
+  grid-template-columns: minmax(0, 1fr) minmax(280px, var(--right-panel-width, 420px));
+}
+
+.beast-workspace.is-right-panel-hidden {
+  grid-template-columns: minmax(180px, 240px) minmax(0, 1fr);
+}
+
+.beast-workspace.is-outline-hidden.is-right-panel-hidden {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .beast-outline,
-.beast-preview {
+.beast-right-panel {
   min-height: 0;
   overflow: hidden;
   border-right: 1px solid var(--beast-border);
   background: var(--beast-panel);
 }
 
-.beast-preview {
+.beast-right-panel {
   border-right: 0;
   border-left: 1px solid var(--beast-border);
+  display: flex;
+  flex-direction: column;
+  position: relative;
+}
+
+.beast-right-panel-resizer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -5px;
+  z-index: 20;
+  width: 9px;
+  cursor: col-resize;
+}
+
+.beast-right-panel-resizer::after {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 4px;
+  width: 1px;
+  content: "";
+  background: transparent;
+}
+
+.beast-right-panel-resizer:hover::after,
+.beast-right-panel-resizer:focus-visible::after,
+body.is-resizing-right-panel .beast-right-panel-resizer::after {
+  background: var(--beast-focus);
+}
+
+.beast-right-panel-resizer:focus-visible {
+  outline: 2px solid var(--beast-focus);
+  outline-offset: -2px;
+}
+
+body.is-resizing-right-panel {
+  cursor: col-resize;
+  user-select: none;
 }
 
 .beast-pane-heading {
@@ -129,6 +227,25 @@ input {
   color: var(--beast-muted);
   font-size: 13px;
   font-weight: 650;
+}
+
+.beast-pane-heading span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.beast-pane-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
+}
+
+.beast-pane-actions .beast-icon-button {
+  width: 28px;
+  height: 28px;
 }
 
 .beast-outline-list {
@@ -152,6 +269,7 @@ input {
   text-align: left;
   background: transparent;
   cursor: pointer;
+  margin-left: calc(var(--outline-depth, 0) * 10px);
 }
 
 .beast-outline-item:hover {
@@ -173,6 +291,11 @@ input {
   font-size: 12px;
 }
 
+.beast-outline-section {
+  min-height: 44px;
+  color: var(--beast-section);
+}
+
 .beast-empty {
   padding: 8px;
 }
@@ -189,11 +312,6 @@ input {
   height: 100%;
 }
 
-.beast-preview {
-  display: flex;
-  flex-direction: column;
-}
-
 .beast-preview-page {
   flex: 1;
   overflow: auto;
@@ -201,6 +319,21 @@ input {
   padding: 24px clamp(18px, 3vw, 36px) 40px;
   background: var(--beast-panel-strong);
   font-family: "Courier Prime", "Courier New", monospace;
+}
+
+.beast-panel-placeholder {
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 10px;
+  flex: 1;
+  min-height: 0;
+  padding: 24px;
+  color: var(--beast-muted);
+  background: var(--beast-panel-strong);
+  font-size: 13px;
+  font-weight: 650;
+  text-align: center;
 }
 
 .beast-preview-page h1 {
@@ -248,6 +381,15 @@ input {
   text-transform: uppercase;
 }
 
+.preview-centered {
+  text-align: center;
+}
+
+.preview-lyrics {
+  margin-left: 24%;
+  font-style: italic;
+}
+
 .preview-section {
   margin-top: 1rem;
   color: var(--beast-section);
@@ -268,6 +410,24 @@ input {
   color: var(--beast-muted);
   border-top: 1px dashed var(--beast-border);
   border-bottom: 1px dashed var(--beast-border);
+}
+
+.preview-scene-number {
+  color: var(--beast-muted);
+  font-weight: 700;
+}
+
+.preview-inline-bold {
+  font-weight: 700;
+}
+
+.preview-inline-italic {
+  font-style: italic;
+}
+
+.preview-inline-underline {
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 
 .beast-statusbar {
@@ -296,7 +456,7 @@ input {
 
 @media (max-width: 980px) {
   .beast-toolbar {
-    grid-template-columns: auto minmax(120px, 1fr);
+    grid-template-columns: auto auto minmax(120px, 1fr);
   }
 
   .beast-command-actions {
@@ -312,7 +472,13 @@ input {
     grid-template-columns: minmax(150px, 210px) minmax(0, 1fr);
   }
 
-  .beast-preview {
+  .beast-workspace.is-outline-hidden,
+  .beast-workspace.is-right-panel-hidden,
+  .beast-workspace.is-outline-hidden.is-right-panel-hidden {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .beast-right-panel {
     display: none;
   }
 }
@@ -327,7 +493,12 @@ input {
   }
 
   .beast-toolbar {
+    grid-template-columns: auto auto minmax(120px, 1fr);
     gap: 8px;
     padding: 8px;
+  }
+
+  .beast-layout-actions {
+    justify-content: flex-end;
   }
 }

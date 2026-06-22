@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyCommand, classifyBlock, parseFountain } from "./index";
+import { applyCommand, classifyBlock, findInlineFormattingRanges, parseFountain, parseInlineFormatting } from "./index";
 
 describe("parseFountain", () => {
   it("classifies common screenplay blocks", () => {
@@ -53,6 +53,49 @@ This cue keeps mixed case.
     expect(doc.blocks[2]?.type).toBe("character");
     expect(doc.blocks[4]?.type).toBe("transition");
   });
+
+  it("supports scene numbers, sections, arbitrary title keys, and omitted boneyard text", () => {
+    const doc = parseFountain(`Title: Numbered
+Revision: Blue
+
+# Act One
+## Sequence A
+
+INT./EXT. CAR - NIGHT #A-1#
+
+Visible action.
+
+/*
+EXT. OMITTED - DAY
+This does not print.
+*/
+
+\\INT. THIS IS ACTION
+`);
+
+    expect(doc.titlePage.revision).toEqual(["Blue"]);
+    expect(doc.outline.map((node) => node.type)).toEqual(["section", "section", "scene"]);
+    expect(doc.outline[1]?.level).toBe(2);
+    expect(doc.scenes[0]?.title).toBe("INT./EXT. CAR - NIGHT");
+    expect(doc.scenes[0]?.sceneNumber).toBe("A-1");
+    expect(doc.blocks.find((block) => block.rawText === "EXT. OMITTED - DAY")?.type).toBe("boneyard");
+    expect(doc.blocks.find((block) => block.rawText === "\\INT. THIS IS ACTION")?.type).toBe("action");
+    expect(doc.blocks.find((block) => block.rawText === "\\INT. THIS IS ACTION")?.text).toBe("INT. THIS IS ACTION");
+  });
+
+  it("supports centered text, lyrics, and inline notes without printing notes", () => {
+    const doc = parseFountain(`> THE END <
+~Amazing grace
+Action with **bold**, *italic*, _underlined_, and [[private note]].
+`);
+
+    expect(doc.blocks[0]?.type).toBe("centered");
+    expect(doc.blocks[0]?.text).toBe("THE END");
+    expect(doc.blocks[1]?.type).toBe("lyrics");
+    expect(doc.blocks[1]?.text).toBe("Amazing grace");
+    expect(doc.blocks[2]?.text).toBe("Action with bold, italic, underlined, and .");
+    expect(doc.blocks[2]?.inline.some((span) => span.styles.includes("note"))).toBe(true);
+  });
 });
 
 describe("classifyBlock", () => {
@@ -90,5 +133,46 @@ describe("applyCommand", () => {
     const result = applyCommand("SARAH\nHello.", { from: 12, to: 12 }, "smart-enter");
 
     expect(result.text).toBe("SARAH\nHello.\n\n");
+  });
+
+  it("toggles Fountain-specific line commands", () => {
+    expect(applyCommand("The End", { from: 0, to: 7 }, "toggle-centered").text).toBe("> The End <");
+    expect(applyCommand("Amazing grace", { from: 0, to: 13 }, "toggle-lyrics").text).toBe("~Amazing grace");
+    expect(applyCommand("INT. ROOM - DAY", { from: 0, to: 15 }, "toggle-scene-number").text).toBe("INT. ROOM - DAY #1#");
+  });
+
+  it("toggles inline emphasis around selections", () => {
+    const bold = applyCommand("Make this bold", { from: 10, to: 14 }, "toggle-bold");
+    expect(bold.text).toBe("Make this **bold**");
+    expect(bold.selection).toEqual({ from: 12, to: 16 });
+
+    const italic = applyCommand("word", { from: 0, to: 4 }, "toggle-italic");
+    expect(italic.text).toBe("*word*");
+  });
+
+  it("wraps selected lines in boneyard omission markers", () => {
+    const result = applyCommand("one\ntwo\nthree", { from: 4, to: 7 }, "toggle-boneyard");
+
+    expect(result.text).toBe("one\n/*\ntwo\n*/\nthree");
+    expect(result.document.blocks.find((block) => block.rawText === "two")?.type).toBe("boneyard");
+  });
+});
+
+describe("inline Fountain markup", () => {
+  it("parses bold, italic, underline, notes, and escaped markers", () => {
+    expect(parseInlineFormatting("**bold** *italic* _under_ [[note]] \\*literal\\*")).toEqual([
+      { text: "bold", styles: ["bold"] },
+      { text: " ", styles: [] },
+      { text: "italic", styles: ["italic"] },
+      { text: " ", styles: [] },
+      { text: "under", styles: ["underline"] },
+      { text: " ", styles: [] },
+      { text: "note", styles: ["note"] },
+      { text: " *literal*", styles: [] },
+    ]);
+  });
+
+  it("returns ranges for editor decoration", () => {
+    expect(findInlineFormattingRanges("A **bold** move")).toEqual([{ from: 4, to: 8, styles: ["bold"] }]);
   });
 });

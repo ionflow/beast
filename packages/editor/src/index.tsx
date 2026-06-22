@@ -1,4 +1,10 @@
-import { applyCommand, type EditorCommand, parseFountain, type ScreenplayDocument } from "@beast/core";
+import {
+  applyCommand,
+  findInlineFormattingRanges,
+  type EditorCommand,
+  parseFountain,
+  type ScreenplayDocument,
+} from "@beast/core";
 import { defaultKeymap, historyKeymap } from "@codemirror/commands";
 import { Prec, RangeSetBuilder, type Extension } from "@codemirror/state";
 import { basicSetup, EditorView } from "codemirror";
@@ -26,6 +32,13 @@ export const editorCommands: Record<string, EditorCommand> = {
   "Mod-Alt-2": "toggle-synopsis",
   "Mod-Alt-3": "toggle-page-break",
   "Mod-Alt-D": "toggle-dual-dialogue",
+  "Mod-Alt-C": "toggle-centered",
+  "Mod-Alt-L": "toggle-lyrics",
+  "Mod-Alt-B": "toggle-boneyard",
+  "Mod-Alt-N": "toggle-scene-number",
+  "Mod-B": "toggle-bold",
+  "Mod-I": "toggle-italic",
+  "Mod-U": "toggle-underline",
 };
 
 export function FountainEditor({ value, onChange, className, scrollToPosition }: FountainEditorProps) {
@@ -175,7 +188,23 @@ function buildDecorations(view: EditorView): DecorationSet {
     const classes = [`cm-fountain-${block.type}`];
     if (block.forced) classes.push("cm-fountain-forced");
     if (block.dual) classes.push("cm-fountain-dual");
+    if (block.omitted) classes.push("cm-fountain-omitted");
+    if (block.escaped) classes.push("cm-fountain-escaped");
     builder.add(line.from, line.from, Decoration.line({ class: classes.join(" ") }));
+
+    for (const range of findInlineFormattingRanges(block.rawText)) {
+      const from = line.from + range.from;
+      const to = line.from + range.to;
+      if (from < to && to <= line.to) {
+        builder.add(
+          from,
+          to,
+          Decoration.mark({
+            class: range.styles.map((style) => `cm-fountain-inline-${style}`).join(" "),
+          }),
+        );
+      }
+    }
   }
 
   return builder.finish();
@@ -239,9 +268,34 @@ const fountainTheme = EditorView.theme({
     color: "var(--beast-note)",
     background: "var(--beast-note-bg)",
   },
+  ".cm-fountain-boneyard": {
+    color: "var(--beast-muted)",
+    background: "rgba(111, 106, 100, 0.12)",
+    textDecoration: "line-through",
+  },
   ".cm-fountain-page-break": {
     color: "var(--beast-muted)",
     textAlign: "center",
     letterSpacing: "0",
+  },
+  ".cm-fountain-centered": {
+    textAlign: "center",
+  },
+  ".cm-fountain-lyrics": {
+    fontStyle: "italic",
+  },
+  ".cm-fountain-inline-bold": {
+    fontWeight: "700",
+  },
+  ".cm-fountain-inline-italic": {
+    fontStyle: "italic",
+  },
+  ".cm-fountain-inline-underline": {
+    textDecoration: "underline",
+    textUnderlineOffset: "2px",
+  },
+  ".cm-fountain-inline-note": {
+    color: "var(--beast-note)",
+    background: "var(--beast-note-bg)",
   },
 });

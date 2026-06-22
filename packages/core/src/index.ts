@@ -12,12 +12,27 @@ export type BlockType =
   | "note"
   | "page-break"
   | "lyrics"
-  | "centered";
+  | "centered"
+  | "boneyard";
+
+export type InlineStyle = "bold" | "italic" | "underline" | "note";
+
+export interface InlineSpan {
+  text: string;
+  styles: InlineStyle[];
+}
+
+export interface InlineFormatRange {
+  from: number;
+  to: number;
+  styles: InlineStyle[];
+}
 
 export interface ScreenplayBlock {
   id: string;
   type: BlockType;
   text: string;
+  inline: InlineSpan[];
   rawText: string;
   startLine: number;
   endLine: number;
@@ -25,6 +40,10 @@ export interface ScreenplayBlock {
   endOffset: number;
   forced: boolean;
   dual: boolean;
+  escaped: boolean;
+  omitted: boolean;
+  level?: number;
+  sceneNumber?: string;
 }
 
 export interface SceneNode {
@@ -32,12 +51,24 @@ export interface SceneNode {
   title: string;
   line: number;
   position: number;
+  sceneNumber?: string;
+}
+
+export interface OutlineNode {
+  id: string;
+  type: "scene" | "section";
+  title: string;
+  line: number;
+  position: number;
+  level: number;
+  sceneNumber?: string;
 }
 
 export interface ScreenplayDocument {
   text: string;
   blocks: ScreenplayBlock[];
   scenes: SceneNode[];
+  outline: OutlineNode[];
   titlePage: Record<string, string[]>;
 }
 
@@ -59,7 +90,14 @@ export type EditorCommand =
   | "toggle-section"
   | "toggle-synopsis"
   | "toggle-page-break"
-  | "toggle-dual-dialogue";
+  | "toggle-dual-dialogue"
+  | "toggle-centered"
+  | "toggle-lyrics"
+  | "toggle-boneyard"
+  | "toggle-bold"
+  | "toggle-italic"
+  | "toggle-underline"
+  | "toggle-scene-number";
 
 export interface CommandResult {
   text: string;
@@ -82,10 +120,12 @@ interface LineRange {
   lineNumber: number;
 }
 
-const SCENE_RE = /^((?:INT|EXT|EST|INT\/EXT|EXT\/INT|I\/E|INT\.\/EXT|EXT\.\/INT)[. ].*)$/i;
+const SCENE_RE = /^((?:INT|EXT|EST|INT\.?\/\.?EXT|EXT\.?\/\.?INT|I\/E)(?:\.|\s).*)$/i;
+const SCENE_NUMBER_RE = /\s+#([A-Za-z0-9.-]+)#\s*$/;
 const TRANSITION_RE = /^(?:FADE(?:\s+IN|\s+OUT)?\.|CUT TO:|MATCH CUT TO:|SMASH CUT TO:|DISSOLVE TO:|BACK TO:|JUMP CUT TO:|END CREDITS\.|TO BLACK\.)$/;
-const TITLE_KEY_RE = /^(title|credit|author|authors|source|draft date|date|contact|copyright):\s*(.*)$/i;
+const TITLE_KEY_RE = /^([A-Za-z][A-Za-z0-9 _-]*):\s*(.*)$/;
 const CHARACTER_RE = /^[A-Z0-9][A-Z0-9 '\-.()/#]*\^?$/;
+const ESCAPED_LINE_RE = /^\\./;
 
 export function parseFountain(text: string): ScreenplayDocument {
   const normalized = normalizeNewlines(text);
@@ -102,24 +142,37 @@ export function parseFountain(text: string): ScreenplayDocument {
 
   const blocks: ScreenplayBlock[] = [];
   const scenes: SceneNode[] = [];
+  const outline: OutlineNode[] = [];
   let inDialogue = false;
+  let inBoneyard = false;
 
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index];
     const previous = previousNonBlank(lines, index);
     const next = nextNonBlank(lines, index);
-    const type = titleLines.has(index)
+    const startsBoneyard = line.text.includes("/*");
+    const endsBoneyard = line.text.includes("*/");
+    const omitted = inBoneyard || startsBoneyard;
+    const type = omitted
+      ? "boneyard"
+      : titleLines.has(index)
       ? "title"
       : classifyLine(line.text, {
           inDialogue,
           previousText: previous?.text ?? "",
           nextText: next?.text ?? "",
+          previousLineText: lines[index - 1]?.text ?? "",
+          nextLineText: lines[index + 1]?.text ?? "",
         });
     const clean = displayTextForType(line.text, type);
+    const inline = parseInlineFormatting(clean);
+    const sceneNumber = type === "scene-heading" ? extractSceneNumber(stripSceneHeadingForce(line.text).trim()).sceneNumber : undefined;
+    const level = type === "section" ? getSectionLevel(line.text) : undefined;
     const block: ScreenplayBlock = {
       id: `block-${index + 1}`,
       type,
-      text: clean,
+      text: plainTextFromSpans(inline),
+      inline,
       rawText: line.text,
       startLine: line.number,
       endLine: line.number,
@@ -127,20 +180,47 @@ export function parseFountain(text: string): ScreenplayDocument {
       endOffset: line.end,
       forced: isForced(line.text, type),
       dual: type === "character" && stripCharacterForce(line.text).trimEnd().endsWith("^"),
+      escaped: isEscapedLine(line.text),
+      omitted,
+      level,
+      sceneNumber,
     };
 
     blocks.push(block);
 
     if (type === "scene-heading") {
-      scenes.push({
+      const scene = {
         id: `scene-${scenes.length + 1}`,
-        title: clean,
+        title: block.text,
         line: line.number,
         position: line.start,
+        sceneNumber,
+      };
+      scenes.push(scene);
+      outline.push({
+        ...scene,
+        id: `outline-${outline.length + 1}`,
+        type: "scene",
+        level: 1,
+      });
+    } else if (type === "section") {
+      outline.push({
+        id: `outline-${outline.length + 1}`,
+        type: "section",
+        title: block.text,
+        line: line.number,
+        position: line.start,
+        level: level ?? 1,
       });
     }
 
-    if (type === "blank") {
+    if (startsBoneyard && !endsBoneyard) {
+      inBoneyard = true;
+    } else if (endsBoneyard) {
+      inBoneyard = false;
+    }
+
+    if (type === "blank" || type === "boneyard") {
       inDialogue = false;
     } else if (type === "character" || type === "dialogue" || type === "parenthetical" || type === "lyrics") {
       inDialogue = true;
@@ -153,6 +233,7 @@ export function parseFountain(text: string): ScreenplayDocument {
     text: normalized,
     blocks,
     scenes,
+    outline,
     titlePage: titlePage.values,
   };
 }
@@ -161,13 +242,134 @@ export function serializeFountain(document: ScreenplayDocument): string {
   return document.text;
 }
 
+export function parseInlineFormatting(text: string): InlineSpan[] {
+  const spans: InlineSpan[] = [];
+  let buffer = "";
+  const stack: Array<{ token: string; styles: InlineStyle[] }> = [];
+  let index = 0;
+
+  const flush = () => {
+    if (!buffer) return;
+    spans.push({ text: buffer, styles: activeStylesFromStack(stack) });
+    buffer = "";
+  };
+
+  const push = (token: string, nextStyles: InlineStyle[]) => {
+    flush();
+    stack.push({ token, styles: nextStyles });
+  };
+
+  const pop = () => {
+    flush();
+    stack.pop();
+  };
+
+  while (index < text.length) {
+    if (text[index] === "\\" && index + 1 < text.length) {
+      buffer += text[index + 1];
+      index += 2;
+      continue;
+    }
+
+    if (text.startsWith("[[", index)) {
+      const close = findClosingDelimiter(text, index + 2, "]]");
+      if (close !== -1) {
+        flush();
+        spans.push({
+          text: unescapeInlineText(text.slice(index + 2, close)),
+          styles: ["note"],
+        });
+        index = close + 2;
+        continue;
+      }
+    }
+
+    const delimiter = inlineDelimiterAt(text, index);
+    if (delimiter && stack[stack.length - 1]?.token === delimiter.token) {
+      pop();
+      index += delimiter.token.length;
+      continue;
+    }
+
+    if (delimiter && findClosingDelimiter(text, index + delimiter.token.length, delimiter.token) !== -1) {
+      push(delimiter.token, delimiter.styles);
+      index += delimiter.token.length;
+      continue;
+    }
+
+    buffer += text[index];
+    index += 1;
+  }
+
+  flush();
+  return spans;
+}
+
+export function findInlineFormattingRanges(text: string): InlineFormatRange[] {
+  const ranges: InlineFormatRange[] = [];
+  const stack: Array<{ token: string; styles: InlineStyle[]; from: number }> = [];
+  let index = 0;
+
+  while (index < text.length) {
+    if (text[index] === "\\" && index + 1 < text.length) {
+      index += 2;
+      continue;
+    }
+
+    if (text.startsWith("[[", index)) {
+      const close = findClosingDelimiter(text, index + 2, "]]");
+      if (close !== -1) {
+        ranges.push({ from: index + 2, to: close, styles: ["note"] });
+        index = close + 2;
+        continue;
+      }
+    }
+
+    const delimiter = inlineDelimiterAt(text, index);
+    if (!delimiter) {
+      index += 1;
+      continue;
+    }
+
+    const top = stack[stack.length - 1];
+    if (top?.token === delimiter.token) {
+      stack.pop();
+      if (top.from < index) {
+        ranges.push({ from: top.from, to: index, styles: top.styles });
+      }
+      index += delimiter.token.length;
+      continue;
+    }
+
+    if (findClosingDelimiter(text, index + delimiter.token.length, delimiter.token) !== -1) {
+      stack.push({
+        token: delimiter.token,
+        styles: delimiter.styles,
+        from: index + delimiter.token.length,
+      });
+      index += delimiter.token.length;
+      continue;
+    }
+
+    index += 1;
+  }
+
+  return ranges;
+}
+
 export function classifyBlock(lines: string[], cursor: number | { line: number }): BlockType {
   const line = typeof cursor === "number" ? cursor : cursor.line;
   const text = lines[line] ?? "";
   const previous = findPreviousText(lines, line);
   const next = findNextText(lines, line);
   const inDialogue = previous ? isCharacterLine(previous) || isParentheticalLine(previous) : false;
-  return classifyLine(text, { inDialogue, previousText: previous, nextText: next });
+  return classifyLine(text, {
+    inDialogue,
+    previousText: previous,
+    nextText: next,
+    previousLineText: lines[line - 1] ?? "",
+    nextLineText: lines[line + 1] ?? "",
+  });
 }
 
 export function applyCommand(text: string, selection: TextSelection, command: EditorCommand): CommandResult {
@@ -218,6 +420,27 @@ export function applyCommand(text: string, selection: TextSelection, command: Ed
       break;
     case "toggle-dual-dialogue":
       [nextText, nextSelection] = replaceCurrentLine(normalized, range, toggleDualDialogue(range.text));
+      break;
+    case "toggle-centered":
+      [nextText, nextSelection] = replaceCurrentLine(normalized, range, toggleCentered(range.text));
+      break;
+    case "toggle-lyrics":
+      [nextText, nextSelection] = replaceCurrentLine(normalized, range, toggleLyrics(range.text));
+      break;
+    case "toggle-boneyard":
+      [nextText, nextSelection] = toggleBoneyard(normalized, safeSelection);
+      break;
+    case "toggle-bold":
+      [nextText, nextSelection] = toggleInlineMarkup(normalized, safeSelection, "**");
+      break;
+    case "toggle-italic":
+      [nextText, nextSelection] = toggleInlineMarkup(normalized, safeSelection, "*");
+      break;
+    case "toggle-underline":
+      [nextText, nextSelection] = toggleInlineMarkup(normalized, safeSelection, "_");
+      break;
+    case "toggle-scene-number":
+      [nextText, nextSelection] = replaceCurrentLine(normalized, range, toggleSceneNumber(range.text));
       break;
     default:
       return {
@@ -300,13 +523,54 @@ function normalizeTitleKey(key: string): string {
     .replace(/\s+/g, "-");
 }
 
+function plainTextFromSpans(spans: InlineSpan[]): string {
+  return spans
+    .filter((span) => !span.styles.includes("note"))
+    .map((span) => span.text)
+    .join("");
+}
+
+function uniqueStyles(styles: InlineStyle[]): InlineStyle[] {
+  return Array.from(new Set(styles)).sort();
+}
+
+function activeStylesFromStack(stack: Array<{ styles: InlineStyle[] }>): InlineStyle[] {
+  return uniqueStyles(stack.flatMap((entry) => entry.styles));
+}
+
+function inlineDelimiterAt(text: string, index: number): { token: string; styles: InlineStyle[] } | undefined {
+  if (text.startsWith("***", index)) return { token: "***", styles: ["bold", "italic"] };
+  if (text.startsWith("**", index)) return { token: "**", styles: ["bold"] };
+  if (text[index] === "*") return { token: "*", styles: ["italic"] };
+  if (text[index] === "_") return { token: "_", styles: ["underline"] };
+  return undefined;
+}
+
+function findClosingDelimiter(text: string, from: number, delimiter: string): number {
+  for (let index = from; index < text.length; index += 1) {
+    if (text[index] === "\\") {
+      index += 1;
+      continue;
+    }
+
+    if (text.startsWith(delimiter, index)) return index;
+  }
+
+  return -1;
+}
+
+function unescapeInlineText(text: string): string {
+  return text.replace(/\\([\\*_()[\]])/g, "$1");
+}
+
 function classifyLine(
   raw: string,
-  context: { inDialogue: boolean; previousText: string; nextText: string },
+  context: { inDialogue: boolean; previousText: string; nextText: string; previousLineText: string; nextLineText: string },
 ): BlockType {
   const text = raw.trim();
 
   if (!text) return "blank";
+  if (isEscapedLine(text)) return "action";
   if (isNoteLine(text)) return "note";
   if (/^={3,}$/.test(text)) return "page-break";
   if (/^#{1,6}(?:\s|$)/.test(text)) return "section";
@@ -314,7 +578,7 @@ function classifyLine(
   if (/^>.*<$/.test(text)) return "centered";
   if (text.startsWith("~")) return "lyrics";
   if (isSceneHeadingLine(text)) return "scene-heading";
-  if (isTransitionLine(text)) return "transition";
+  if (isTransitionLine(text, context)) return "transition";
   if (context.inDialogue && isParentheticalLine(text)) return "parenthetical";
   if (text.startsWith("@")) return "character";
   if (isCharacterLine(text) && canBeCharacterCue(context.nextText)) return "character";
@@ -359,9 +623,17 @@ function isSceneHeadingLine(text: string): boolean {
   return text.startsWith(".") || SCENE_RE.test(text);
 }
 
-function isTransitionLine(text: string): boolean {
+function isTransitionLine(
+  text: string,
+  context: { previousLineText?: string; nextLineText?: string } = {},
+): boolean {
   if (text.startsWith(">") && !text.endsWith("<")) return true;
-  return text === text.toUpperCase() && TRANSITION_RE.test(text);
+  const hasTransitionShape = text === text.toUpperCase() && (TRANSITION_RE.test(text) || /TO:$/.test(text));
+  if (!hasTransitionShape) return false;
+
+  const previousIsBlank = context.previousLineText == null || context.previousLineText.trim() === "";
+  const nextIsBlank = context.nextLineText == null || context.nextLineText.trim() === "";
+  return previousIsBlank && nextIsBlank;
 }
 
 function isParentheticalLine(text: string): boolean {
@@ -387,12 +659,14 @@ function canBeCharacterCue(nextText: string): boolean {
 }
 
 function displayTextForType(raw: string, type: BlockType): string {
-  const text = raw.trim();
+  const escaped = isEscapedLine(raw);
+  const text = escaped ? raw.trim().slice(1) : raw.trim();
 
   switch (type) {
     case "scene-heading":
-      return text.startsWith(".") ? text.slice(1).trim() : text;
+      return extractSceneNumber(stripSceneHeadingForce(text).trim()).text;
     case "action":
+      if (escaped) return text;
       return text.startsWith("!") ? text.slice(1).trim() : raw;
     case "character":
       return stripCharacterForce(text).replace(/\^$/, "").trim();
@@ -408,6 +682,8 @@ function displayTextForType(raw: string, type: BlockType): string {
       return text.replace(/^>\s*/, "").replace(/\s*<$/, "");
     case "lyrics":
       return text.replace(/^~\s*/, "");
+    case "boneyard":
+      return text.replace(/\/\*/g, "").replace(/\*\//g, "").trim();
     default:
       return raw;
   }
@@ -425,6 +701,28 @@ function isForced(raw: string, type: BlockType): boolean {
 
 function stripCharacterForce(text: string): string {
   return text.startsWith("@") ? text.slice(1) : text;
+}
+
+function stripSceneHeadingForce(text: string): string {
+  return text.startsWith(".") ? text.slice(1) : text;
+}
+
+function isEscapedLine(raw: string): boolean {
+  return ESCAPED_LINE_RE.test(raw.trimStart());
+}
+
+function extractSceneNumber(text: string): { text: string; sceneNumber?: string } {
+  const match = text.match(SCENE_NUMBER_RE);
+  if (!match) return { text };
+
+  return {
+    text: text.slice(0, match.index).trimEnd(),
+    sceneNumber: match[1],
+  };
+}
+
+function getSectionLevel(raw: string): number {
+  return raw.trim().match(/^#+/)?.[0].length ?? 1;
 }
 
 function clampSelection(selection: TextSelection, length: number): TextSelection {
@@ -460,8 +758,11 @@ function replaceCurrentLine(text: string, range: LineRange, replacement: string)
 function cleanLine(raw: string): string {
   let text = raw.trim();
   text = text.replace(/^\[\[/, "").replace(/\]\]$/, "");
+  text = text.replace(/^\/\*/, "").replace(/\*\/$/, "");
   text = text.replace(/^#{1,6}\s*/, "");
   text = text.replace(/^=\s*/, "");
+  text = text.replace(/^~\s*/, "");
+  text = text.replace(/^>\s*/, "").replace(/\s*<$/, "");
   text = text.replace(/^[.!@>]\s*/, "");
   text = text.replace(/\^$/, "");
   return text.trim();
@@ -568,4 +869,90 @@ function toggleDualDialogue(raw: string): string {
   const text = forceCharacter(raw);
   if (text.endsWith("^")) return text.slice(0, -1);
   return `${text}^`;
+}
+
+function toggleCentered(raw: string): string {
+  const text = raw.trim();
+  if (/^>.*<$/.test(text)) return text.replace(/^>\s*/, "").replace(/\s*<$/, "");
+  return `> ${cleanLine(raw) || "Centered"} <`;
+}
+
+function toggleLyrics(raw: string): string {
+  const text = raw.trim();
+  if (text.startsWith("~")) return text.replace(/^~\s*/, "");
+  return `~${cleanLine(raw) || "Lyric"}`;
+}
+
+function toggleSceneNumber(raw: string): string {
+  const text = raw.trimEnd();
+  const scene = extractSceneNumber(text);
+  if (scene.sceneNumber) return scene.text;
+  return `${text} #1#`;
+}
+
+function toggleBoneyard(text: string, selection: TextSelection): [string, TextSelection] {
+  const expanded = expandSelectionToLines(text, selection);
+  const selected = text.slice(expanded.from, expanded.to);
+  const trimmed = selected.trim();
+
+  if (trimmed.startsWith("/*") && trimmed.endsWith("*/")) {
+    const uncommented = selected
+      .replace(/^\s*\/\*\s*\n?/, "")
+      .replace(/\n?\s*\*\/\s*$/, "");
+    const nextText = `${text.slice(0, expanded.from)}${uncommented}${text.slice(expanded.to)}`;
+    const nextPosition = expanded.from + uncommented.length;
+    return [nextText, { from: nextPosition, to: nextPosition }];
+  }
+
+  const suffix = selected.endsWith("\n") ? "*/" : "\n*/";
+  const commented = `/*\n${selected}${suffix}`;
+  const nextText = `${text.slice(0, expanded.from)}${commented}${text.slice(expanded.to)}`;
+  const nextPosition = expanded.from + commented.length;
+  return [nextText, { from: nextPosition, to: nextPosition }];
+}
+
+function expandSelectionToLines(text: string, selection: TextSelection): TextSelection {
+  const fromRange = getLineRange(text, selection.from);
+  const toRange = getLineRange(text, selection.to);
+  return { from: fromRange.start, to: toRange.end };
+}
+
+function toggleInlineMarkup(text: string, selection: TextSelection, marker: "*" | "**" | "_"): [string, TextSelection] {
+  if (selection.from === selection.to) {
+    const insertion = `${marker}${marker}`;
+    const nextText = `${text.slice(0, selection.from)}${insertion}${text.slice(selection.to)}`;
+    const nextPosition = selection.from + marker.length;
+    return [nextText, { from: nextPosition, to: nextPosition }];
+  }
+
+  const selected = text.slice(selection.from, selection.to);
+  const before = text.slice(selection.from - marker.length, selection.from);
+  const after = text.slice(selection.to, selection.to + marker.length);
+
+  if (before === marker && after === marker) {
+    const nextText = `${text.slice(0, selection.from - marker.length)}${selected}${text.slice(selection.to + marker.length)}`;
+    return [
+      nextText,
+      {
+        from: selection.from - marker.length,
+        to: selection.to - marker.length,
+      },
+    ];
+  }
+
+  if (selected.startsWith(marker) && selected.endsWith(marker) && selected.length >= marker.length * 2) {
+    const unwrapped = selected.slice(marker.length, selected.length - marker.length);
+    const nextText = `${text.slice(0, selection.from)}${unwrapped}${text.slice(selection.to)}`;
+    return [nextText, { from: selection.from, to: selection.from + unwrapped.length }];
+  }
+
+  const wrapped = `${marker}${selected}${marker}`;
+  const nextText = `${text.slice(0, selection.from)}${wrapped}${text.slice(selection.to)}`;
+  return [
+    nextText,
+    {
+      from: selection.from + marker.length,
+      to: selection.to + marker.length,
+    },
+  ];
 }

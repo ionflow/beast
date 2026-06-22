@@ -2,6 +2,8 @@ export const PROJECT_FILE = "project.json";
 export const SCRIPT_FILE = "script.fountain";
 export const BEAST_PROJECT_VERSION = 1;
 
+export type RightPanelMode = "preview" | "browser" | "notecards" | "images" | "research";
+
 export interface ProjectMetadata {
   version: number;
   title: string;
@@ -12,6 +14,8 @@ export interface ProjectMetadata {
   editor: {
     showOutline: boolean;
     showPreview: boolean;
+    rightPanelMode: RightPanelMode;
+    rightPanelWidth: number;
     fontSize: number;
   };
   outlineCacheVersion: number;
@@ -79,6 +83,8 @@ export function createProjectBundle(input: Partial<Pick<ProjectMetadata, "title"
       editor: {
         showOutline: true,
         showPreview: true,
+        rightPanelMode: "preview",
+        rightPanelWidth: 420,
         fontSize: 16,
       },
       outlineCacheVersion: 1,
@@ -254,9 +260,23 @@ function exportProjectFiles(bundle: ProjectBundle): ExportFile[] {
 }
 
 function touchMetadata(metadata: ProjectMetadata): ProjectMetadata {
+  const editor = {
+    showOutline: metadata.editor?.showOutline ?? true,
+    showPreview: metadata.editor?.showPreview ?? true,
+    rightPanelMode: metadata.editor?.rightPanelMode ?? "preview",
+    rightPanelWidth: clampPanelWidth(metadata.editor?.rightPanelWidth),
+    fontSize: metadata.editor?.fontSize ?? 16,
+  };
+
   return {
     ...metadata,
     title: metadata.title?.trim() || "Untitled",
+    editor,
     updatedAt: new Date().toISOString(),
   };
+}
+
+function clampPanelWidth(width: unknown): number {
+  if (typeof width !== "number" || !Number.isFinite(width)) return 420;
+  return Math.min(Math.max(Math.round(width), 280), 760);
 }
