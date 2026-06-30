@@ -4,6 +4,7 @@ import {
   type EditorCommand,
   parseFountain,
   type ScreenplayDocument,
+  type TextSelection,
 } from "@beast/core";
 import { defaultKeymap, historyKeymap } from "@codemirror/commands";
 import { Prec, RangeSetBuilder, type Extension } from "@codemirror/state";
@@ -14,6 +15,7 @@ import { useEffect, useMemo, useRef } from "react";
 export interface FountainEditorProps {
   value: string;
   onChange: (value: string, document: ScreenplayDocument) => void;
+  onSelectionChange?: (selection: TextSelection) => void;
   className?: string;
   scrollToPosition?: number;
 }
@@ -41,16 +43,19 @@ export const editorCommands: Record<string, EditorCommand> = {
   "Mod-U": "toggle-underline",
 };
 
-export function FountainEditor({ value, onChange, className, scrollToPosition }: FountainEditorProps) {
+export function FountainEditor({ value, onChange, onSelectionChange, className, scrollToPosition }: FountainEditorProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const viewRef = useRef<EditorView | null>(null);
   const onChangeRef = useRef(onChange);
+  const onSelectionChangeRef = useRef(onSelectionChange);
   onChangeRef.current = onChange;
+  onSelectionChangeRef.current = onSelectionChange;
 
   const extensions = useMemo(
     () =>
       createFountainExtensions({
         onChange: (nextValue, document) => onChangeRef.current(nextValue, document),
+        onSelectionChange: (selection) => onSelectionChangeRef.current?.(selection),
       }),
     [],
   );
@@ -65,6 +70,7 @@ export function FountainEditor({ value, onChange, className, scrollToPosition }:
     });
 
     viewRef.current = view;
+    onSelectionChangeRef.current?.({ from: view.state.selection.main.from, to: view.state.selection.main.to });
 
     return () => {
       view.destroy();
@@ -115,6 +121,7 @@ export function FountainEditor({ value, onChange, className, scrollToPosition }:
 
 export function createFountainExtensions(options: {
   onChange?: (value: string, document: ScreenplayDocument) => void;
+  onSelectionChange?: (selection: TextSelection) => void;
 } = {}): Extension[] {
   return [
     basicSetup,
@@ -131,9 +138,15 @@ export function createFountainExtensions(options: {
       ...defaultKeymap,
     ])),
     EditorView.updateListener.of((update) => {
-      if (!update.docChanged) return;
-      const value = update.state.doc.toString();
-      options.onChange?.(value, parseFountain(value));
+      if (update.docChanged) {
+        const value = update.state.doc.toString();
+        options.onChange?.(value, parseFountain(value));
+      }
+
+      if (update.docChanged || update.selectionSet) {
+        const selection = update.state.selection.main;
+        options.onSelectionChange?.({ from: selection.from, to: selection.to });
+      }
     }),
   ];
 }

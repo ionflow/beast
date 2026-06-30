@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { applyCommand, classifyBlock, findInlineFormattingRanges, parseFountain, parseInlineFormatting } from "./index";
+import {
+  applyCommand,
+  classifyBlock,
+  findInlineFormattingRanges,
+  getWritingContext,
+  parseFountain,
+  parseInlineFormatting,
+} from "./index";
 
 describe("parseFountain", () => {
   it("classifies common screenplay blocks", () => {
@@ -103,6 +110,54 @@ describe("classifyBlock", () => {
     const lines = ["", "MARA", "Hello.", ""];
     expect(classifyBlock(lines, 1)).toBe("character");
     expect(classifyBlock(lines, 2)).toBe("dialogue");
+  });
+});
+
+describe("getWritingContext", () => {
+  it("uses project context before the first scene", () => {
+    const doc = parseFountain("Title: Example\n\nINT. HOUSE - DAY\nAction.");
+
+    expect(getWritingContext(doc, 0)).toEqual({
+      key: "project",
+      kind: "project",
+      label: "Project",
+      position: 0,
+      line: 1,
+    });
+  });
+
+  it("uses nearest scene context inside a scene", () => {
+    const doc = parseFountain("INT. HOUSE - DAY\nAction.\n\nEXT. YARD - NIGHT\nMore action.");
+    const position = doc.text.indexOf("More action");
+
+    expect(getWritingContext(doc, position)).toMatchObject({
+      key: "scene:ext-yard-night:1",
+      kind: "scene",
+      label: "EXT. YARD - NIGHT",
+      line: 4,
+    });
+  });
+
+  it("prefers scene numbers for context keys", () => {
+    const doc = parseFountain("INT. HOUSE - DAY #A-1#\nAction.");
+
+    expect(getWritingContext(doc, doc.text.length)).toMatchObject({
+      key: "scene-number:a-1",
+      sceneNumber: "A-1",
+    });
+  });
+
+  it("disambiguates duplicate scene titles by occurrence", () => {
+    const doc = parseFountain("INT. HOUSE - DAY\nOne.\n\nINT. HOUSE - DAY\nTwo.");
+    const position = doc.text.indexOf("Two");
+
+    expect(getWritingContext(doc, position).key).toBe("scene:int-house-day:2");
+  });
+
+  it("uses project context for section-only scripts", () => {
+    const doc = parseFountain("# Act One\n= Opening movement");
+
+    expect(getWritingContext(doc, doc.text.length).key).toBe("project");
   });
 });
 

@@ -1,8 +1,68 @@
 export const PROJECT_FILE = "project.json";
 export const SCRIPT_FILE = "script.fountain";
+export const PANELS_DIR = "panels";
+export const BROWSER_PANEL_FILE = `${PANELS_DIR}/browser.json`;
+export const PANEL_PREFERENCES_FILE = `${PANELS_DIR}/preferences.json`;
+export const CONTEXTS_DIR = `${PANELS_DIR}/contexts`;
 export const BEAST_PROJECT_VERSION = 1;
 
 export type RightPanelMode = "preview" | "browser" | "notecards" | "images" | "research";
+export type PanelViewMode = "stacked" | "grid";
+
+export interface BrowserPanelMetadata {
+  currentUrl: string;
+  history: string[];
+  historyIndex: number;
+}
+
+export interface PanelNotecard {
+  id: string;
+  title: string;
+  body: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PanelImagePrompt {
+  id: string;
+  prompt: string;
+  createdAt: string;
+}
+
+export interface ResearchItem {
+  id: string;
+  type: "website" | "file";
+  title: string;
+  source: string;
+  note: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ResearchStack {
+  id: string;
+  title: string;
+  items: ResearchItem[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PanelContextMetadata {
+  notecards: PanelNotecard[];
+  imagePrompts: PanelImagePrompt[];
+  researchStacks: ResearchStack[];
+}
+
+export interface PanelPreferencesMetadata {
+  notecardsView: PanelViewMode;
+  researchView: PanelViewMode;
+}
+
+export interface ProjectPanelsMetadata {
+  browser: BrowserPanelMetadata;
+  preferences: PanelPreferencesMetadata;
+  contexts: Record<string, PanelContextMetadata>;
+}
 
 export interface ProjectMetadata {
   version: number;
@@ -18,6 +78,7 @@ export interface ProjectMetadata {
     rightPanelWidth: number;
     fontSize: number;
   };
+  panels: ProjectPanelsMetadata;
   outlineCacheVersion: number;
 }
 
@@ -87,9 +148,18 @@ export function createProjectBundle(input: Partial<Pick<ProjectMetadata, "title"
         rightPanelWidth: 420,
         fontSize: 16,
       },
+      panels: createProjectPanelsMetadata(),
       outlineCacheVersion: 1,
     },
     script: input.script ?? DEFAULT_SCRIPT,
+  };
+}
+
+export function createPanelContextMetadata(): PanelContextMetadata {
+  return {
+    notecards: [],
+    imagePrompts: [],
+    researchStacks: [],
   };
 }
 
@@ -168,8 +238,10 @@ export function createTauriStorageAdapter(): StorageAdapter {
 
       const { invoke } = await import("@tauri-apps/api/core");
       const payload = await invoke<TauriProjectPayload>("read_project_bundle", { path });
+      const metadata = JSON.parse(payload.projectJson) as ProjectMetadata;
+
       return validateProjectBundle({
-        metadata: JSON.parse(payload.projectJson) as ProjectMetadata,
+        metadata: mergeMetadataWithPanelFiles(metadata, payload.files ?? []),
         script: payload.script,
         path: payload.path,
       });
@@ -190,8 +262,9 @@ export function createTauriStorageAdapter(): StorageAdapter {
 
       await invoke("write_project_bundle", {
         path,
-        projectJson: JSON.stringify(updated.metadata, null, 2),
+        projectJson: JSON.stringify(projectMetadataFile(updated.metadata), null, 2),
         script: updated.script,
+        projectFiles: exportProjectFiles(updated).filter((file) => file.name !== PROJECT_FILE && file.name !== SCRIPT_FILE),
       });
 
       return { path };
@@ -204,6 +277,12 @@ interface TauriProjectPayload {
   path: string;
   projectJson: string;
   script: string;
+  files?: TauriProjectFilePayload[];
+}
+
+interface TauriProjectFilePayload {
+  name: string;
+  content: string;
 }
 
 async function selectDirectory(title: string): Promise<string | undefined> {
@@ -225,17 +304,19 @@ async function loadFromFiles(files: File[]): Promise<ProjectBundle> {
   if (!projectFile) throw new Error(`${PROJECT_FILE} is missing from the selected project bundle.`);
   if (!scriptFile) throw new Error(`${SCRIPT_FILE} is missing from the selected project bundle.`);
 
-  const [projectJson, script] = await Promise.all([projectFile.text(), scriptFile.text()]);
+  const [projectJson, script, panelFiles] = await Promise.all([projectFile.text(), scriptFile.text(), loadPanelFiles(files)]);
+  const metadata = JSON.parse(projectJson) as ProjectMetadata;
+
   return validateProjectBundle({
-    metadata: JSON.parse(projectJson) as ProjectMetadata,
+    metadata: mergeMetadataWithPanelFiles(metadata, panelFiles),
     script,
   });
 }
 
 function findBundleFile(files: File[], name: string): File | undefined {
   return files.find((file) => {
-    const relativePath = (file as File & { webkitRelativePath?: string }).webkitRelativePath ?? "";
-    return file.name === name || relativePath.endsWith(`/${name}`);
+    const path = normalizeBundlePath(bundleFilePath(file));
+    return file.name === name || path === name || path.endsWith(`/${name}`);
   });
 }
 
@@ -248,7 +329,7 @@ function exportProjectFiles(bundle: ProjectBundle): ExportFile[] {
   return [
     {
       name: PROJECT_FILE,
-      content: JSON.stringify(updated.metadata, null, 2),
+      content: JSON.stringify(projectMetadataFile(updated.metadata), null, 2),
       mimeType: "application/json",
     },
     {
@@ -256,7 +337,111 @@ function exportProjectFiles(bundle: ProjectBundle): ExportFile[] {
       content: updated.script,
       mimeType: "text/plain;charset=utf-8",
     },
+    {
+      name: BROWSER_PANEL_FILE,
+      content: JSON.stringify(updated.metadata.panels.browser, null, 2),
+      mimeType: "application/json",
+    },
+    {
+      name: PANEL_PREFERENCES_FILE,
+      content: JSON.stringify(updated.metadata.panels.preferences, null, 2),
+      mimeType: "application/json",
+    },
+    ...Object.entries(updated.metadata.panels.contexts).map(([key, context]) => ({
+      name: contextPanelFileName(key),
+      content: JSON.stringify({ key, ...context }, null, 2),
+      mimeType: "application/json",
+    })),
   ];
+}
+
+async function loadPanelFiles(files: File[]): Promise<TauriProjectFilePayload[]> {
+  const panelFiles = files.filter((file) => isPanelFilePath(bundleFilePath(file)));
+
+  return Promise.all(
+    panelFiles.map(async (file) => ({
+      name: normalizeBundlePath(bundleFilePath(file)),
+      content: await file.text(),
+    })),
+  );
+}
+
+function mergeMetadataWithPanelFiles(metadata: ProjectMetadata, files: TauriProjectFilePayload[]): ProjectMetadata {
+  const splitPanels = hydrateSplitPanelFiles(files);
+  if (!splitPanels) return metadata;
+
+  const legacyPanels = hydrateProjectPanelsMetadata(metadata.panels);
+  return {
+    ...metadata,
+    panels: {
+      browser: splitPanels.browser ?? legacyPanels.browser,
+      preferences: splitPanels.preferences ?? legacyPanels.preferences,
+      contexts: {
+        ...legacyPanels.contexts,
+        ...splitPanels.contexts,
+      },
+    },
+  };
+}
+
+function hydrateSplitPanelFiles(files: TauriProjectFilePayload[]): Partial<ProjectPanelsMetadata> | undefined {
+  let browser: BrowserPanelMetadata | undefined;
+  let preferences: PanelPreferencesMetadata | undefined;
+  const contexts: Record<string, PanelContextMetadata> = {};
+
+  for (const file of files) {
+    const path = normalizeBundlePath(file.name);
+
+    try {
+      const parsed = JSON.parse(file.content) as unknown;
+
+      if (path === BROWSER_PANEL_FILE) {
+        browser = hydrateBrowserPanelMetadata(parsed);
+        continue;
+      }
+
+      if (path === PANEL_PREFERENCES_FILE) {
+        preferences = hydratePanelPreferencesMetadata(parsed);
+        continue;
+      }
+
+      if (isContextPanelFilePath(path) && isRecord(parsed) && typeof parsed.key === "string") {
+        contexts[parsed.key] = hydratePanelContextMetadata(parsed);
+      }
+    } catch {
+      // Optional panel files should not prevent opening the screenplay itself.
+    }
+  }
+
+  if (!browser && !preferences && Object.keys(contexts).length === 0) return undefined;
+  return { browser, preferences, contexts };
+}
+
+function projectMetadataFile(metadata: ProjectMetadata): Omit<ProjectMetadata, "panels"> {
+  const { panels: _panels, ...projectMetadata } = metadata;
+  return projectMetadata;
+}
+
+function bundleFilePath(file: File): string {
+  return (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name;
+}
+
+function normalizeBundlePath(path: string): string {
+  return path.replace(/\\/g, "/").replace(/^\/+/, "");
+}
+
+function isPanelFilePath(path: string): boolean {
+  const normalized = normalizeBundlePath(path);
+  return normalized === BROWSER_PANEL_FILE || normalized === PANEL_PREFERENCES_FILE || isContextPanelFilePath(normalized);
+}
+
+function isContextPanelFilePath(path: string): boolean {
+  const normalized = normalizeBundlePath(path);
+  return normalized.startsWith(`${CONTEXTS_DIR}/`) && normalized.endsWith(".json");
+}
+
+function contextPanelFileName(contextKey: string): string {
+  return `${CONTEXTS_DIR}/${encodeURIComponent(contextKey)}.json`;
 }
 
 function touchMetadata(metadata: ProjectMetadata): ProjectMetadata {
@@ -272,6 +457,7 @@ function touchMetadata(metadata: ProjectMetadata): ProjectMetadata {
     ...metadata,
     title: metadata.title?.trim() || "Untitled",
     editor,
+    panels: hydrateProjectPanelsMetadata(metadata.panels),
     updatedAt: new Date().toISOString(),
   };
 }
@@ -279,4 +465,132 @@ function touchMetadata(metadata: ProjectMetadata): ProjectMetadata {
 function clampPanelWidth(width: unknown): number {
   if (typeof width !== "number" || !Number.isFinite(width)) return 420;
   return Math.min(Math.max(Math.round(width), 280), 760);
+}
+
+function createProjectPanelsMetadata(): ProjectPanelsMetadata {
+  return {
+    browser: {
+      currentUrl: "",
+      history: [],
+      historyIndex: -1,
+    },
+    preferences: {
+      notecardsView: "stacked",
+      researchView: "stacked",
+    },
+    contexts: {},
+  };
+}
+
+function hydrateProjectPanelsMetadata(panels: unknown): ProjectPanelsMetadata {
+  if (!isRecord(panels)) return createProjectPanelsMetadata();
+
+  const browser = hydrateBrowserPanelMetadata(panels.browser);
+  const preferences = hydratePanelPreferencesMetadata(panels.preferences);
+  const contexts = isRecord(panels.contexts)
+    ? Object.fromEntries(
+        Object.entries(panels.contexts).map(([key, context]) => [key, hydratePanelContextMetadata(context)]),
+      )
+    : {};
+
+  return { browser, preferences, contexts };
+}
+
+function hydratePanelPreferencesMetadata(preferences: unknown): PanelPreferencesMetadata {
+  if (!isRecord(preferences)) return createProjectPanelsMetadata().preferences;
+
+  return {
+    notecardsView: preferences.notecardsView === "grid" ? "grid" : "stacked",
+    researchView: preferences.researchView === "grid" ? "grid" : "stacked",
+  };
+}
+
+function hydrateBrowserPanelMetadata(browser: unknown): BrowserPanelMetadata {
+  if (!isRecord(browser)) return createProjectPanelsMetadata().browser;
+
+  const history = Array.isArray(browser.history) ? browser.history.filter((entry): entry is string => typeof entry === "string") : [];
+  const historyIndex =
+    typeof browser.historyIndex === "number" && Number.isFinite(browser.historyIndex)
+      ? Math.min(Math.max(Math.round(browser.historyIndex), history.length > 0 ? 0 : -1), history.length - 1)
+      : history.length - 1;
+  const historyUrl = historyIndex >= 0 ? history[historyIndex] ?? "" : "";
+  const currentUrl = typeof browser.currentUrl === "string" ? browser.currentUrl : historyUrl;
+
+  return {
+    currentUrl,
+    history,
+    historyIndex,
+  };
+}
+
+function hydratePanelContextMetadata(context: unknown): PanelContextMetadata {
+  if (!isRecord(context)) return createPanelContextMetadata();
+
+  return {
+    notecards: Array.isArray(context.notecards) ? context.notecards.map(hydrateNotecard).filter(isDefined) : [],
+    imagePrompts: Array.isArray(context.imagePrompts) ? context.imagePrompts.map(hydrateImagePrompt).filter(isDefined) : [],
+    researchStacks: Array.isArray(context.researchStacks)
+      ? context.researchStacks.map(hydrateResearchStack).filter(isDefined)
+      : [],
+  };
+}
+
+function hydrateNotecard(card: unknown): PanelNotecard | undefined {
+  if (!isRecord(card) || typeof card.id !== "string") return undefined;
+  const now = new Date().toISOString();
+
+  return {
+    id: card.id,
+    title: typeof card.title === "string" ? card.title : "",
+    body: typeof card.body === "string" ? card.body : "",
+    createdAt: typeof card.createdAt === "string" ? card.createdAt : now,
+    updatedAt: typeof card.updatedAt === "string" ? card.updatedAt : now,
+  };
+}
+
+function hydrateImagePrompt(prompt: unknown): PanelImagePrompt | undefined {
+  if (!isRecord(prompt) || typeof prompt.id !== "string") return undefined;
+
+  return {
+    id: prompt.id,
+    prompt: typeof prompt.prompt === "string" ? prompt.prompt : "",
+    createdAt: typeof prompt.createdAt === "string" ? prompt.createdAt : new Date().toISOString(),
+  };
+}
+
+function hydrateResearchStack(stack: unknown): ResearchStack | undefined {
+  if (!isRecord(stack) || typeof stack.id !== "string") return undefined;
+  const now = new Date().toISOString();
+
+  return {
+    id: stack.id,
+    title: typeof stack.title === "string" ? stack.title : "",
+    items: Array.isArray(stack.items) ? stack.items.map(hydrateResearchItem).filter(isDefined) : [],
+    createdAt: typeof stack.createdAt === "string" ? stack.createdAt : now,
+    updatedAt: typeof stack.updatedAt === "string" ? stack.updatedAt : now,
+  };
+}
+
+function hydrateResearchItem(item: unknown): ResearchItem | undefined {
+  if (!isRecord(item) || typeof item.id !== "string") return undefined;
+  const now = new Date().toISOString();
+  const type = item.type === "file" ? "file" : "website";
+
+  return {
+    id: item.id,
+    type,
+    title: typeof item.title === "string" ? item.title : "",
+    source: typeof item.source === "string" ? item.source : "",
+    note: typeof item.note === "string" ? item.note : "",
+    createdAt: typeof item.createdAt === "string" ? item.createdAt : now,
+    updatedAt: typeof item.updatedAt === "string" ? item.updatedAt : now,
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function isDefined<T>(value: T | undefined): value is T {
+  return value !== undefined;
 }

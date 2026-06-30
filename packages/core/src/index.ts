@@ -72,6 +72,15 @@ export interface ScreenplayDocument {
   titlePage: Record<string, string[]>;
 }
 
+export interface WritingContext {
+  key: string;
+  kind: "project" | "scene";
+  label: string;
+  position: number;
+  line: number;
+  sceneNumber?: string;
+}
+
 export interface TextSelection {
   from: number;
   to: number;
@@ -372,6 +381,35 @@ export function classifyBlock(lines: string[], cursor: number | { line: number }
   });
 }
 
+export function getWritingContext(document: ScreenplayDocument, cursorPosition: number): WritingContext {
+  const position = Math.max(0, Math.min(cursorPosition, document.text.length));
+  const activeScene = [...document.scenes].reverse().find((scene) => scene.position <= position);
+
+  if (!activeScene) {
+    return {
+      key: "project",
+      kind: "project",
+      label: "Project",
+      position: 0,
+      line: 1,
+    };
+  }
+
+  const occurrence = document.scenes.filter((scene) => scene.title === activeScene.title && scene.position <= activeScene.position).length;
+  const sceneKey = activeScene.sceneNumber
+    ? `scene-number:${normalizeContextKey(activeScene.sceneNumber)}`
+    : `scene:${normalizeContextKey(activeScene.title)}:${occurrence}`;
+
+  return {
+    key: sceneKey,
+    kind: "scene",
+    label: activeScene.title,
+    position: activeScene.position,
+    line: activeScene.line,
+    sceneNumber: activeScene.sceneNumber,
+  };
+}
+
 export function applyCommand(text: string, selection: TextSelection, command: EditorCommand): CommandResult {
   const normalized = normalizeNewlines(text);
   const safeSelection = clampSelection(selection, normalized.length);
@@ -521,6 +559,16 @@ function normalizeTitleKey(key: string): string {
     .trim()
     .toLowerCase()
     .replace(/\s+/g, "-");
+}
+
+function normalizeContextKey(value: string): string {
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+
+  return normalized || "untitled";
 }
 
 function plainTextFromSpans(spans: InlineSpan[]): string {
