@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Beast Capture</title>
+    <link rel="stylesheet" href="sidepanel.css" />
+  </head>
+  <body>
+    <main class="beast-capture-shell">
+      <header class="beast-capture-header">
+        <h1>Beast Capture</h1>
+        <button id="refresh-projects" type="button" title="Reload saved Beast projects from the desktop app">Refresh Projects</button>
+      </header>
+
+      <form id="capture-form">
+        <label>
+          Project
+          <select id="project-select" required></select>
+        </label>
+
+        <div class="capture-type" aria-label="Capture type">
+          <button class="is-active" type="button">Website</button>
+          <button type="button" disabled>Local File</button>
+        </div>
+
+        <label>
+          Stack
+          <input id="stack-title" value="Chrome Captures" />
+        </label>
+
+        <label>
+          Title
+          <input id="capture-title" required />
+        </label>
+
+        <label>
+          URL
+          <input id="capture-url" type="url" required />
+        </label>
+
+        <label>
+          Notes
+          <textarea id="capture-note" rows="5" placeholder="Why this matters to the script."></textarea>
+        </label>
+
+        <label>
+          Selection
+          <textarea id="selection-text" rows="5" placeholder="Select text on the page or use the context menu."></textarea>
+        </label>
+
+        <label class="checkbox-row">
+          <input id="include-screenshot" type="checkbox" />
+          Capture visible tab as JPG
+        </label>
+
+        <div class="actions">
+          <button id="use-current-tab" type="button" title="Fill title, URL, and selected text from the active Chrome tab">Use Current Tab</button>
+          <button type="submit" title="Send this capture to the selected Beast project">Save to Beast</button>
+        </div>
+
+        <p id="status" role="status">Open Beast desktop with a saved project.</p>
+      </form>
+    </main>
+    <script src="sidepanel.js"></script>
+  </body>
+</html>

@@ -530,6 +530,22 @@ body.is-resizing-right-panel {
   text-decoration: underline;
 }
 
+.beast-capture-quote {
+  margin: 0;
+  border-left: 2px solid var(--beast-border);
+  padding: 2px 0 2px 9px;
+  color: var(--beast-muted);
+  font-size: 12px;
+  line-height: 1.35;
+  white-space: pre-wrap;
+}
+
+.beast-capture-assets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .beast-browser-frame {
   flex: 1;
   min-height: 320px;
@@ -757,9 +773,9 @@ body.is-resizing-right-panel {
 }
 
 .beast-statusbar {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(130px, 240px) minmax(0, 1fr) auto auto;
   align-items: center;
-  justify-content: space-between;
   gap: 12px;
   min-width: 0;
   padding: 0 12px;
@@ -769,11 +785,78 @@ body.is-resizing-right-panel {
   font-size: 12px;
 }
 
-.beast-statusbar span {
+.beast-save-status,
+.beast-project-location {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.beast-save-status span,
+.beast-save-status time,
+.beast-project-location span,
+.beast-project-location strong,
+.beast-status-count,
+.beast-status-platform {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.beast-save-status {
+  color: var(--beast-muted);
+}
+
+.beast-save-status[data-tone="pending"] {
+  color: var(--beast-accent);
+}
+
+.beast-save-status[data-tone="saving"] {
+  color: var(--beast-focus);
+}
+
+.beast-save-status[data-tone="saved"] {
+  color: var(--beast-scene);
+}
+
+.beast-save-status[data-tone="error"] {
+  color: var(--beast-accent);
+  font-weight: 700;
+}
+
+.beast-save-status-mark {
+  flex: 0 0 7px;
+  width: 7px;
+  height: 7px;
+  border: 1px solid currentColor;
+  background: currentColor;
+}
+
+.beast-save-status[data-tone="idle"] .beast-save-status-mark {
+  background: transparent;
+}
+
+.beast-save-status time {
+  color: var(--beast-muted);
+}
+
+.beast-project-location {
+  justify-self: stretch;
+}
+
+.beast-project-location span {
+  flex: 0 0 auto;
+  color: var(--beast-muted);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.beast-project-location strong {
+  color: var(--beast-ink);
+  font-weight: 600;
 }
 
 .beast-hidden-input {
@@ -810,6 +893,15 @@ body.is-resizing-right-panel {
 }
 
 @media (max-width: 680px) {
+  .beast-statusbar {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .beast-status-platform,
+  .beast-status-count {
+    display: none;
+  }
+
   .beast-workspace {
     grid-template-columns: minmax(0, 1fr);
   }

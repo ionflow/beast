@@ -35,6 +35,8 @@ export interface ResearchItem {
   title: string;
   source: string;
   note: string;
+  quote?: string;
+  assets: string[];
   createdAt: string;
   updatedAt: string;
 }
@@ -582,6 +584,8 @@ function hydrateResearchItem(item: unknown): ResearchItem | undefined {
     title: typeof item.title === "string" ? item.title : "",
     source: typeof item.source === "string" ? item.source : "",
     note: typeof item.note === "string" ? item.note : "",
+    quote: typeof item.quote === "string" ? item.quote : undefined,
+    assets: Array.isArray(item.assets) ? item.assets.filter((asset): asset is string => typeof asset === "string") : [],
     createdAt: typeof item.createdAt === "string" ? item.createdAt : now,
     updatedAt: typeof item.updatedAt === "string" ? item.updatedAt : now,
   };

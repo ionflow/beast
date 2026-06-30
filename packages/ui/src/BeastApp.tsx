@@ -88,6 +88,21 @@ declare global {
   }
 }
 
+interface BridgeCaptureSavedPayload {
+  projectId: string;
+  path: string;
+  contextKey: string;
+  stackId: string;
+  stackTitle: string;
+  item: unknown;
+}
+
+interface SaveStatus {
+  tone: "idle" | "pending" | "saving" | "saved" | "error";
+  message: string;
+  at?: string;
+}
+
 const screenplayCommandButtons: Array<{ command: EditorCommand; label: string; icon: LucideIcon }> = [
   { command: "force-scene-heading", label: "Scene", icon: Heading1 },
   { command: "force-action", label: "Action", icon: Text },
@@ -120,12 +135,13 @@ export function BeastApp() {
   const storage = useMemo(createRuntimeStorage, []);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [bundle, setBundle] = useState<ProjectBundle>(() => storage.createProject({ title: "Untitled" }));
-  const [status, setStatus] = useState("Ready");
+  const [saveStatus, setSaveStatus] = useState<SaveStatus>({ tone: "idle", message: "Ready" });
   const [scrollToPosition, setScrollToPosition] = useState<number | undefined>();
   const [activeCommand, setActiveCommand] = useState<EditorCommand | null>(null);
   const [editorSelection, setEditorSelection] = useState<TextSelection>({ from: 0, to: 0 });
   const document = useMemo(() => parseFountain(bundle.script), [bundle.script]);
   const activeContext = useMemo(() => getWritingContext(document, editorSelection.from), [document, editorSelection.from]);
+  const projectLocation = useMemo(() => describeProjectLocation(bundle.path, storage.platform), [bundle.path, storage.platform]);
   const showOutline = bundle.metadata.editor.showOutline;
   const showRightPanel = bundle.metadata.editor.showPreview;
   const rightPanelMode = bundle.metadata.editor.rightPanelMode ?? "preview";
@@ -146,10 +162,10 @@ export function BeastApp() {
       .loadProject({ kind: "local" })
       .then((project) => {
         setBundle(project);
-        setStatus("Draft restored");
+        setSavedStatus("Draft restored");
       })
       .catch(() => {
-        setStatus("Ready");
+        setSaveStatus({ tone: "idle", message: "Ready" });
       });
   }, [storage]);
 
@@ -157,28 +173,151 @@ export function BeastApp() {
     if (storage.platform !== "web") return;
 
     const handle = window.setTimeout(() => {
-      storage.saveProject(bundle, { kind: "local" }).catch(() => {
-        setStatus("Autosave failed");
-      });
+      setSavingStatus("Autosaving");
+      storage
+        .saveProject(bundle, { kind: "local" })
+        .then(() => setSavedStatus("Local draft saved"))
+        .catch((error) => setErrorStatus(error));
     }, 600);
 
     return () => window.clearTimeout(handle);
   }, [bundle, storage]);
+
+  useEffect(() => {
+    if (storage.platform !== "tauri" || !bundle.path) return;
+
+    import("@tauri-apps/api/core")
+      .then(({ invoke }) =>
+        invoke("register_bridge_project", {
+          project: {
+            id: bundle.path,
+            title: bundle.metadata.title,
+            path: bundle.path,
+            active: true,
+          },
+        }),
+      )
+      .catch(() => setErrorStatus("Browser bridge registration failed"));
+  }, [bundle.metadata.title, bundle.path, storage.platform]);
+
+  useEffect(() => {
+    if (storage.platform !== "tauri") return undefined;
+
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+
+    import("@tauri-apps/api/event")
+      .then(({ listen }) =>
+        listen<BridgeCaptureSavedPayload>("beast://research-capture", (event) => {
+          handleBridgeCapture(event.payload);
+        }),
+      )
+      .then((nextUnlisten) => {
+        if (cancelled) {
+          nextUnlisten();
+        } else {
+          unlisten = nextUnlisten;
+        }
+      })
+      .catch(() => setErrorStatus("Browser bridge listener failed"));
+
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [storage.platform]);
 
   function updateBundle(updater: (current: ProjectBundle) => ProjectBundle) {
     setBundle((current) => updater(current));
   }
 
   function updateMetadata(updater: (current: ProjectMetadata) => ProjectMetadata) {
+    markProjectChanged();
     updateBundle((current) => ({
       ...current,
       metadata: updater(current.metadata),
     }));
   }
 
+  function markProjectChanged() {
+    setSaveStatus((current) => {
+      if (current.tone === "saving") return current;
+      return {
+        tone: "pending",
+        message: storage.platform === "web" ? "Autosave pending" : "Unsaved changes",
+      };
+    });
+  }
+
+  function setSavingStatus(message: string) {
+    setSaveStatus({ tone: "saving", message });
+  }
+
+  function setSavedStatus(message: string) {
+    setSaveStatus({ tone: "saved", message, at: new Date().toISOString() });
+  }
+
+  function setErrorStatus(error: unknown) {
+    setSaveStatus({ tone: "error", message: errorMessage(error) });
+  }
+
+  function handleBridgeCapture(capture: BridgeCaptureSavedPayload) {
+    const capturedItem = normalizeBridgeResearchItem(capture.item);
+    if (!capturedItem) {
+      setErrorStatus("Browser capture payload was missing a research item.");
+      return;
+    }
+
+    updateBundle((current) => {
+      if (current.path !== capture.path) return current;
+
+      return {
+        ...current,
+        metadata: updatePanelContext(current.metadata, capture.contextKey, (context) => {
+          const now = new Date().toISOString();
+          const stackIndex = context.researchStacks.findIndex((stack) => stack.id === capture.stackId);
+          const stackTitle = capture.stackTitle.trim() || "Chrome Captures";
+
+          if (stackIndex === -1) {
+            return {
+              ...context,
+              researchStacks: [
+                ...context.researchStacks,
+                {
+                  id: capture.stackId,
+                  title: stackTitle,
+                  items: [capturedItem],
+                  createdAt: now,
+                  updatedAt: now,
+                },
+              ],
+            };
+          }
+
+          return {
+            ...context,
+            researchStacks: context.researchStacks.map((stack, index) =>
+              index === stackIndex
+                ? {
+                    ...stack,
+                    items: stack.items.some((item) => item.id === capturedItem.id) ? stack.items : [...stack.items, capturedItem],
+                    updatedAt: now,
+                  }
+                : stack,
+            ),
+          };
+        }),
+      };
+    });
+    setSavedStatus("Browser capture saved");
+  }
+
   async function handleNewProject() {
     setBundle(storage.createProject({ title: "Untitled" }));
-    setStatus("New project");
+    setSaveStatus({
+      tone: "pending",
+      message: storage.platform === "web" ? "New project pending autosave" : "New unsaved project",
+    });
   }
 
   async function handleOpenProject() {
@@ -188,34 +327,37 @@ export function BeastApp() {
     }
 
     try {
+      setSavingStatus("Opening project");
       const project = await storage.loadProject();
       setBundle(project);
-      setStatus("Project opened");
+      setSavedStatus("Project opened");
     } catch (error) {
-      setStatus(errorMessage(error));
+      setErrorStatus(error);
     }
   }
 
   async function handleSaveProject() {
     try {
+      setSavingStatus("Saving project");
       const result = await storage.saveProject(bundle);
       if (result.path) {
         updateBundle((current) => ({ ...current, path: result.path }));
       }
-      setStatus("Saved");
+      setSavedStatus(result.path ? "Saved to folder" : "Saved");
     } catch (error) {
-      setStatus(errorMessage(error));
+      setErrorStatus(error);
     }
   }
 
   async function handleExportProject() {
     try {
+      setSavingStatus(storage.platform === "web" ? "Exporting project" : "Saving project");
       const result = await storage.saveProject(bundle, storage.platform === "web" ? { kind: "download" } : { kind: "path" });
       if (result.files) downloadFiles(result.files);
       if (result.path) updateBundle((current) => ({ ...current, path: result.path }));
-      setStatus(storage.platform === "web" ? "Exported" : "Saved");
+      setSavedStatus(storage.platform === "web" ? "Exported" : "Saved to folder");
     } catch (error) {
-      setStatus(errorMessage(error));
+      setErrorStatus(error);
     }
   }
 
@@ -223,17 +365,19 @@ export function BeastApp() {
     if (!files) return;
 
     try {
+      setSavingStatus("Importing project");
       const project = await storage.loadProject({ kind: "files", files: Array.from(files) });
       setBundle(project);
-      setStatus("Project imported");
+      setSavedStatus("Project imported");
     } catch (error) {
-      setStatus(errorMessage(error));
+      setErrorStatus(error);
     } finally {
       if (fileInputRef.current) fileInputRef.current.value = "";
     }
   }
 
   function handleTitleChange(title: string) {
+    markProjectChanged();
     updateBundle((current) => ({
       ...current,
       metadata: {
@@ -244,6 +388,7 @@ export function BeastApp() {
   }
 
   function handleEditorChange(script: string) {
+    markProjectChanged();
     updateBundle((current) => ({
       ...current,
       script,
@@ -261,6 +406,7 @@ export function BeastApp() {
   }
 
   function setOutlineVisible(visible: boolean) {
+    markProjectChanged();
     updateBundle((current) => ({
       ...current,
       metadata: {
@@ -274,6 +420,7 @@ export function BeastApp() {
   }
 
   function setRightPanelVisible(visible: boolean) {
+    markProjectChanged();
     updateBundle((current) => ({
       ...current,
       metadata: {
@@ -287,6 +434,7 @@ export function BeastApp() {
   }
 
   function setRightPanelMode(mode: RightPanelMode) {
+    markProjectChanged();
     updateBundle((current) => ({
       ...current,
       metadata: {
@@ -303,6 +451,7 @@ export function BeastApp() {
   function setRightPanelWidth(width: number) {
     const clampedWidth = clampRightPanelWidth(width);
 
+    markProjectChanged();
     updateBundle((current) => ({
       ...current,
       metadata: {
@@ -435,9 +584,17 @@ export function BeastApp() {
       </section>
 
       <footer className="beast-statusbar">
-        <span>{status}</span>
-        <span>{document.scenes.length} scenes</span>
-        <span>{storage.platform}</span>
+        <div className="beast-save-status" data-tone={saveStatus.tone} title={saveStatusTitle(saveStatus)}>
+          <span className="beast-save-status-mark" aria-hidden="true" />
+          <span>{saveStatus.message}</span>
+          {saveStatus.at ? <time dateTime={saveStatus.at}>{formatStatusTime(saveStatus.at)}</time> : null}
+        </div>
+        <div className="beast-project-location" title={projectLocation.title}>
+          <span>{projectLocation.labelPrefix}</span>
+          <strong>{projectLocation.label}</strong>
+        </div>
+        <span className="beast-status-count">{document.scenes.length} scenes</span>
+        <span className="beast-status-platform">{storage.platform}</span>
       </footer>
     </main>
   );
@@ -1133,6 +1290,7 @@ function ResearchPanel({
                   title: type === "website" ? "Website" : "Local File",
                   source: "",
                   note: "",
+                  assets: [],
                   createdAt: now,
                   updatedAt: now,
                 },
@@ -1283,6 +1441,17 @@ function ResearchPanel({
                             rows={3}
                             onChange={(event) => updateItem(stack.id, item.id, "note", event.currentTarget.value)}
                           />
+                          {item.quote ? <blockquote className="beast-capture-quote">{item.quote}</blockquote> : null}
+                          {researchItemAssets(item).length > 0 ? (
+                            <div className="beast-capture-assets">
+                              {researchItemAssets(item).map((asset) => (
+                                <a key={asset} className="beast-source-link" href={researchAssetHref(asset)} target="_blank" rel="noreferrer">
+                                  <ExternalLink size={13} aria-hidden="true" />
+                                  {asset.split("/").pop() ?? "Asset"}
+                                </a>
+                              ))}
+                            </div>
+                          ) : null}
                           {item.source.trim() ? (
                             <a className="beast-source-link" href={researchItemHref(item)} target="_blank" rel="noreferrer">
                               <ExternalLink size={13} aria-hidden="true" />
@@ -1363,6 +1532,23 @@ function ResearchStackSummary({ stack }: { stack: ResearchStack }) {
       {stack.items.length > 4 ? <li>{stack.items.length - 4} more</li> : null}
     </ul>
   );
+}
+
+function normalizeBridgeResearchItem(item: unknown): ResearchItem | undefined {
+  if (!isRecord(item) || typeof item.id !== "string") return undefined;
+  const now = new Date().toISOString();
+
+  return {
+    id: item.id,
+    type: item.type === "file" ? "file" : "website",
+    title: typeof item.title === "string" ? item.title : "",
+    source: typeof item.source === "string" ? item.source : "",
+    note: typeof item.note === "string" ? item.note : "",
+    quote: typeof item.quote === "string" ? item.quote : undefined,
+    assets: Array.isArray(item.assets) ? item.assets.filter((asset): asset is string => typeof asset === "string") : [],
+    createdAt: typeof item.createdAt === "string" ? item.createdAt : now,
+    updatedAt: typeof item.updatedAt === "string" ? item.updatedAt : now,
+  };
 }
 
 function PreviewBlock({ block }: { block: ScreenplayBlock }) {
@@ -1558,6 +1744,16 @@ function researchItemHref(item: ResearchItem): string {
   return source;
 }
 
+function researchItemAssets(item: ResearchItem): string[] {
+  return Array.isArray(item.assets) ? item.assets : [];
+}
+
+function researchAssetHref(asset: string): string {
+  if (/^file:\/\//i.test(asset) || /^https?:\/\//i.test(asset)) return asset;
+  if (asset.startsWith("/")) return `file://${asset}`;
+  return asset;
+}
+
 function reorderById<T extends { id: string }>(items: T[], draggedId: string, targetId: string): T[] {
   const draggedIndex = items.findIndex((item) => item.id === draggedId);
   const targetIndex = items.findIndex((item) => item.id === targetId);
@@ -1581,6 +1777,52 @@ function formatTimestamp(value: string): string {
     hour: "numeric",
     minute: "2-digit",
   });
+}
+
+function formatStatusTime(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+
+  return date.toLocaleTimeString(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+function saveStatusTitle(status: SaveStatus): string {
+  if (!status.at) return status.message;
+
+  const date = new Date(status.at);
+  if (Number.isNaN(date.getTime())) return status.message;
+
+  return `${status.message} at ${date.toLocaleString()}`;
+}
+
+function describeProjectLocation(
+  path: string | undefined,
+  platform: StorageAdapter["platform"],
+): { labelPrefix: string; label: string; title: string } {
+  if (path) {
+    return {
+      labelPrefix: "Folder",
+      label: path,
+      title: `Project folder: ${path}`,
+    };
+  }
+
+  if (platform === "tauri") {
+    return {
+      labelPrefix: "Folder",
+      label: "No folder selected",
+      title: "Save this project to choose a desktop project folder.",
+    };
+  }
+
+  return {
+    labelPrefix: "Storage",
+    label: "Browser local draft",
+    title: "Web builds autosave drafts to this browser until you export the project files.",
+  };
 }
 
 function createId(prefix: string): string {
@@ -1610,6 +1852,10 @@ function downloadFiles(files: ExportFile[]) {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }
 
 function clampRightPanelWidth(width: number): number {

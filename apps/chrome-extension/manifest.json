@@ -1,0 +1,17 @@
+{
+  "manifest_version": 3,
+  "name": "Beast Capture",
+  "version": "0.1.0",
+  "description": "Capture web research into Beast screenplay projects.",
+  "permissions": ["activeTab", "contextMenus", "sidePanel", "scripting", "storage", "tabs"],
+  "host_permissions": ["http://127.0.0.1:33179/*", "http://localhost:33179/*"],
+  "action": {
+    "default_title": "Beast Capture"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  }
+}
