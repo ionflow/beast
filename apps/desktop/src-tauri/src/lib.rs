@@ -6,6 +6,7 @@ use std::{
     io::{Read, Write},
     net::{TcpListener, TcpStream},
     path::{Component, Path, PathBuf},
+    process::Command,
     sync::{Arc, Mutex},
     thread,
     time::{SystemTime, UNIX_EPOCH},
@@ -341,6 +342,66 @@ fn copy_research_asset(
         size,
     )
     .ok_or_else(|| "Could not create attachment metadata.".to_string())
+}
+
+#[tauri::command]
+fn open_external_target(target: String) -> Result<(), String> {
+    let target = target.trim();
+    if target.is_empty() || target.contains('\0') {
+        return Err("Open target is invalid.".to_string());
+    }
+
+    open_with_platform(target)
+}
+
+fn open_with_platform(target: &str) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let chrome_status = Command::new("open")
+            .args(["-a", "Google Chrome", target])
+            .status();
+
+        match chrome_status {
+            Ok(status) if status.success() => return Ok(()),
+            Ok(_) | Err(_) => {}
+        }
+
+        let status = Command::new("open")
+            .arg(target)
+            .status()
+            .map_err(|error| format!("Could not open target: {}", error))?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err("Could not open target.".to_string())
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let status = Command::new("cmd")
+            .args(["/C", "start", "", target])
+            .status()
+            .map_err(|error| format!("Could not open target: {}", error))?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err("Could not open target.".to_string())
+        }
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let status = Command::new("xdg-open")
+            .arg(target)
+            .status()
+            .map_err(|error| format!("Could not open target: {}", error))?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err("Could not open target.".to_string())
+        }
+    }
 }
 
 fn read_panel_files(root: &Path) -> Result<Vec<ProjectFilePayload>, String> {
@@ -1089,6 +1150,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             copy_research_asset,
+            open_external_target,
             register_bridge_project,
             read_project_bundle,
             write_project_bundle

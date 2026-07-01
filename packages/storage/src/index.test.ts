@@ -87,6 +87,15 @@ describe("web storage adapter", () => {
     expect(hydrated.metadata.panels.contexts).toEqual({});
   });
 
+  it("migrates the retired browser panel mode to media", () => {
+    const bundle = createProjectBundle({ title: "Legacy Browser" });
+    bundle.metadata.editor.rightPanelMode = "browser" as unknown as typeof bundle.metadata.editor.rightPanelMode;
+
+    const hydrated = validateProjectBundle(bundle);
+
+    expect(hydrated.metadata.editor.rightPanelMode).toBe("media");
+  });
+
   it("round trips panel metadata through exported project files", async () => {
     const adapter = createWebStorageAdapter();
     const bundle = createProjectBundle({ title: "Round Trip" });

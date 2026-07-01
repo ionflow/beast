@@ -6,7 +6,7 @@ export const PANEL_PREFERENCES_FILE = `${PANELS_DIR}/preferences.json`;
 export const CONTEXTS_DIR = `${PANELS_DIR}/contexts`;
 export const BEAST_PROJECT_VERSION = 1;
 
-export type RightPanelMode = "preview" | "browser" | "notecards" | "images" | "research";
+export type RightPanelMode = "preview" | "media" | "notecards" | "images" | "research";
 export type PanelViewMode = "stacked" | "grid";
 
 export interface BrowserPanelMetadata {
@@ -464,7 +464,7 @@ function touchMetadata(metadata: ProjectMetadata): ProjectMetadata {
   const editor = {
     showOutline: metadata.editor?.showOutline ?? true,
     showPreview: metadata.editor?.showPreview ?? true,
-    rightPanelMode: metadata.editor?.rightPanelMode ?? "preview",
+    rightPanelMode: hydrateRightPanelMode(metadata.editor?.rightPanelMode),
     rightPanelWidth: clampPanelWidth(metadata.editor?.rightPanelWidth),
     fontSize: metadata.editor?.fontSize ?? 16,
   };
@@ -481,6 +481,12 @@ function touchMetadata(metadata: ProjectMetadata): ProjectMetadata {
 function clampPanelWidth(width: unknown): number {
   if (typeof width !== "number" || !Number.isFinite(width)) return 420;
   return Math.min(Math.max(Math.round(width), 280), 760);
+}
+
+function hydrateRightPanelMode(mode: unknown): RightPanelMode {
+  if (mode === "browser") return "media";
+  if (mode === "preview" || mode === "media" || mode === "notecards" || mode === "images" || mode === "research") return mode;
+  return "preview";
 }
 
 function createProjectPanelsMetadata(): ProjectPanelsMetadata {

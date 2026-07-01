@@ -24,21 +24,21 @@ import {
   type StorageAdapter,
 } from "@beast/storage";
 import {
-  ArrowLeft,
-  ArrowRight,
   Bot,
   Bold,
   AlignCenter,
+  Clapperboard,
   Download,
   Eye,
   EyeOff,
   ExternalLink,
+  FileAudio,
   File as FileIcon,
   FileText,
+  FileVideo,
   FilePlus2,
   FolderOpen,
   GripVertical,
-  Globe,
   Hash,
   Heading1,
   ImagePlus,
@@ -57,7 +57,6 @@ import {
   Paperclip,
   Parentheses,
   Plus,
-  RotateCw,
   Save,
   ScrollText,
   Send,
@@ -130,6 +129,31 @@ interface AppSessionState {
 interface ResearchAssetPhoto extends Photo {
   asset: ResearchAsset;
   assetHref: string;
+  assetOpenHref: string;
+  canPreview: boolean;
+}
+
+type ProjectMediaKind = "image" | "video" | "audio" | "pdf" | "file";
+
+interface ProjectMediaItem {
+  id: string;
+  name: string;
+  source: string;
+  kind: ProjectMediaKind;
+  mimeType?: string;
+  size?: number;
+  storage: ResearchAsset["storage"];
+  contextLabel: string;
+  stackTitle: string;
+  itemTitle: string;
+  asset: ResearchAsset;
+}
+
+interface ProjectMediaPhoto extends Photo {
+  media: ProjectMediaItem;
+  previewHref: string;
+  openHref: string;
+  canPreview: boolean;
 }
 
 const APP_SESSION_KEY = "beast:fountain-editor:session";
@@ -157,7 +181,7 @@ const textCommandButtons: Array<{ command: EditorCommand; label: string; icon: L
 
 const rightPanelModes: Array<{ mode: RightPanelMode; label: string; icon: LucideIcon; enabled: boolean }> = [
   { mode: "preview", label: "Preview", icon: Eye, enabled: true },
-  { mode: "browser", label: "Research Browser", icon: Globe, enabled: true },
+  { mode: "media", label: "Media Gallery", icon: Clapperboard, enabled: true },
   { mode: "notecards", label: "Notecards", icon: NotebookTabs, enabled: true },
   { mode: "images", label: "Images", icon: Images, enabled: true },
   { mode: "research", label: "Research Notes", icon: Bot, enabled: true },
@@ -891,8 +915,8 @@ function RightPanelContent({
   switch (mode) {
     case "preview":
       return <PreviewPanel blocks={blocks} title={title} />;
-    case "browser":
-      return <BrowserPanel metadata={metadata} onMetadataChange={onMetadataChange} />;
+    case "media":
+      return <MediaGalleryPanel metadata={metadata} onError={onError} projectPath={projectPath} />;
     case "notecards":
       return <NotecardsPanel activeContext={activeContext} metadata={metadata} onMetadataChange={onMetadataChange} projectTitle={title} />;
     case "images":
@@ -925,106 +949,139 @@ function PreviewPanel({ blocks, title }: { blocks: ScreenplayBlock[]; title: str
   );
 }
 
-function BrowserPanel({
+function MediaGalleryPanel({
   metadata,
-  onMetadataChange,
+  onError,
+  projectPath,
 }: {
   metadata: ProjectMetadata;
-  onMetadataChange: (updater: (current: ProjectMetadata) => ProjectMetadata) => void;
+  onError: (error: unknown) => void;
+  projectPath?: string;
 }) {
-  const browser = metadata.panels.browser;
-  const [address, setAddress] = useState(browser.currentUrl);
-  const [frameReloadKey, setFrameReloadKey] = useState(0);
-  const canGoBack = browser.historyIndex > 0;
-  const canGoForward = browser.historyIndex >= 0 && browser.historyIndex < browser.history.length - 1;
-  const frameUrl = getEmbeddableBrowserUrl(browser.currentUrl);
+  const [mediaDimensions, setMediaDimensions] = useState<Record<string, { width: number; height: number }>>({});
+  const mediaItems = useMemo(() => collectProjectMediaItems(metadata), [metadata]);
+  const photos = useMemo<ProjectMediaPhoto[]>(
+    () =>
+      mediaItems.map((media) => {
+        const dimensions = projectMediaDimensions(media, mediaDimensions[media.id]);
+        const previewHref = researchAssetHref(media.asset, projectPath);
+        const openHref = researchAssetOpenHref(media.asset, projectPath);
+        const canPreview = canPreviewMediaHref(previewHref);
 
-  useEffect(() => {
-    setAddress(browser.currentUrl);
-  }, [browser.currentUrl]);
+        return {
+          key: media.id,
+          src: media.kind === "image" && canPreview ? previewHref : TRANSPARENT_IMAGE_SRC,
+          width: dimensions.width,
+          height: dimensions.height,
+          alt: media.name,
+          title: projectMediaLabel(media),
+          media,
+          previewHref,
+          openHref,
+          canPreview,
+        };
+      }),
+    [mediaItems, mediaDimensions, projectPath],
+  );
 
-  function updateBrowser(nextBrowser: ProjectMetadata["panels"]["browser"]) {
-    onMetadataChange((current) => ({
-      ...current,
-      panels: {
-        ...current.panels,
-        browser: nextBrowser,
-      },
-    }));
-  }
+  function rememberMediaDimensions(mediaId: string, width: number, height: number) {
+    if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return;
 
-  function handleNavigate(event: ReactFormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const url = normalizeBrowserUrl(address);
-    if (!url) return;
-
-    const previousHistory = browser.historyIndex >= 0 ? browser.history.slice(0, browser.historyIndex + 1) : [];
-    const history = [...previousHistory, url];
-    updateBrowser({
-      currentUrl: url,
-      history,
-      historyIndex: history.length - 1,
+    setMediaDimensions((current) => {
+      const existing = current[mediaId];
+      if (existing?.width === width && existing.height === height) return current;
+      return {
+        ...current,
+        [mediaId]: { width, height },
+      };
     });
   }
 
-  function goToHistory(historyIndex: number) {
-    const nextUrl = browser.history[historyIndex];
-    if (!nextUrl) return;
-
-    updateBrowser({
-      currentUrl: nextUrl,
-      history: browser.history,
-      historyIndex,
-    });
+  if (mediaItems.length === 0) {
+    return (
+      <div className="beast-panel-body beast-media-gallery-panel">
+        <div className="beast-panel-empty">
+          <Clapperboard size={22} aria-hidden="true" />
+          <span>No project media files yet.</span>
+        </div>
+      </div>
+    );
   }
 
   return (
-    <div className="beast-panel-body beast-browser-panel">
-      <form className="beast-browser-bar" onSubmit={handleNavigate}>
-        <IconButton label="Back" icon={ArrowLeft} disabled={!canGoBack} onClick={() => goToHistory(browser.historyIndex - 1)} />
-        <IconButton label="Forward" icon={ArrowRight} disabled={!canGoForward} onClick={() => goToHistory(browser.historyIndex + 1)} />
-        <IconButton label="Reload" icon={RotateCw} disabled={!browser.currentUrl} onClick={() => setFrameReloadKey((current) => current + 1)} />
-        <input
-          className="beast-panel-input"
-          value={address}
-          aria-label="Browser address"
-          placeholder="Search or enter a URL"
-          onChange={(event) => setAddress(event.currentTarget.value)}
-        />
-        <button className="beast-panel-icon-submit" type="submit" aria-label="Go">
-          <Send size={16} aria-hidden="true" />
-        </button>
-      </form>
+    <div className="beast-panel-body beast-media-gallery-panel">
+      <RowsPhotoAlbum<ProjectMediaPhoto>
+        photos={photos}
+        spacing={8}
+        padding={0}
+        targetRowHeight={112}
+        rowConstraints={{ singleRowMaxHeight: 120 }}
+        componentsProps={{
+          container: { className: "beast-media-mosaic" },
+          wrapper: ({ photo }) => ({
+            className: `beast-media-tile beast-media-tile-${photo.media.kind}`,
+            title: projectMediaLabel(photo.media),
+          }),
+          image: ({ photo }) => ({
+            onLoad: (event) => {
+              if (photo.media.kind !== "image") return;
+              rememberMediaDimensions(photo.media.id, event.currentTarget.naturalWidth, event.currentTarget.naturalHeight);
+            },
+          }),
+        }}
+        render={{
+          image: (props, { photo }) => {
+            if (photo.media.kind === "image" && photo.canPreview) {
+              return <img {...props} className={`${props.className ?? ""} beast-media-preview`} />;
+            }
 
-      {browser.currentUrl ? (
-        <>
-          <div className="beast-browser-fallback">
-            <a href={browser.currentUrl} target="_blank" rel="noreferrer">
-              <ExternalLink size={14} aria-hidden="true" />
-              Open externally
+            if (photo.media.kind === "video" && photo.canPreview) {
+              return (
+                <video
+                  className={`${props.className ?? ""} beast-media-preview`}
+                  src={photo.previewHref}
+                  muted
+                  playsInline
+                  preload="metadata"
+                  onLoadedMetadata={(event) => {
+                    rememberMediaDimensions(
+                      photo.media.id,
+                      event.currentTarget.videoWidth || 160,
+                      event.currentTarget.videoHeight || 90,
+                    );
+                  }}
+                />
+              );
+            }
+
+            const TileIcon = mediaIcon(photo.media.kind);
+
+            return (
+              <div className={`${props.className ?? ""} beast-media-file-preview`} style={props.style} aria-label={photo.alt}>
+                <TileIcon size={32} aria-hidden="true" />
+                <span>{mediaKindLabel(photo.media.kind)}</span>
+              </div>
+            );
+          },
+          extras: (_, { photo }) => (
+            <a
+              className="beast-media-open-link"
+              href={photo.openHref}
+              target="_blank"
+              rel="noreferrer"
+              aria-label={`Open ${photo.media.name}`}
+              onClick={(event) => {
+                event.preventDefault();
+                void openExternalTarget(photo.openHref).catch(onError);
+              }}
+            >
+              <span className="beast-media-open-icon">
+                <ExternalLink size={15} aria-hidden="true" />
+              </span>
             </a>
-          </div>
-          {frameUrl ? (
-            <iframe
-              key={`${frameUrl}-${frameReloadKey}`}
-              className="beast-browser-frame"
-              src={frameUrl}
-              title="Research browser"
-              sandbox="allow-forms allow-popups allow-popups-to-escape-sandbox allow-same-origin allow-scripts"
-            />
-          ) : (
-            <div className="beast-panel-empty">
-              <Globe size={22} aria-hidden="true" />
-              <span>This site blocks embedded browsing. Open it externally.</span>
-            </div>
-          )}
-        </>
-      ) : (
-        <div className="beast-panel-empty">
-          <Globe size={22} aria-hidden="true" />
-          <span>Enter a URL or search term.</span>
-        </div>
-      )}
+          ),
+        }}
+      />
     </div>
   );
 }
@@ -1694,6 +1751,10 @@ function ResearchPanel({
                                 target="_blank"
                                 rel="noreferrer"
                                 aria-label="Open Source"
+                                onClick={(event) => {
+                                  event.preventDefault();
+                                  void openExternalTarget(researchItemHref(item)).catch(onError);
+                                }}
                               >
                                 <ExternalLink size={15} aria-hidden="true" />
                               </a>
@@ -1789,6 +1850,7 @@ function ResearchPanel({
                             <ResearchAssetGallery
                               assets={researchItemAssets(item)}
                               onDelete={(assetId) => deleteAsset(stack.id, item.id, assetId)}
+                              onError={onError}
                               projectPath={projectPath}
                             />
                           ) : null}
@@ -1871,10 +1933,12 @@ function ResearchStackSummary({ stack }: { stack: ResearchStack }) {
 function ResearchAssetGallery({
   assets,
   onDelete,
+  onError,
   projectPath,
 }: {
   assets: ResearchAsset[];
   onDelete: (assetId: string) => void;
+  onError: (error: unknown) => void;
   projectPath?: string;
 }) {
   const [imageDimensions, setImageDimensions] = useState<Record<string, { width: number; height: number }>>({});
@@ -1882,17 +1946,21 @@ function ResearchAssetGallery({
     () =>
       assets.map((asset) => {
         const assetHref = researchAssetHref(asset, projectPath);
+        const assetOpenHref = researchAssetOpenHref(asset, projectPath);
+        const canPreview = canPreviewMediaHref(assetHref);
         const dimensions = researchAssetDimensions(asset, imageDimensions[asset.id]);
 
         return {
           key: asset.id,
-          src: asset.kind === "image" ? assetHref : TRANSPARENT_IMAGE_SRC,
+          src: asset.kind === "image" && canPreview ? assetHref : TRANSPARENT_IMAGE_SRC,
           width: dimensions.width,
           height: dimensions.height,
           alt: asset.name || "Attachment",
           title: assetLabel(asset),
           asset,
           assetHref,
+          assetOpenHref,
+          canPreview,
         };
       }),
     [assets, imageDimensions, projectPath],
@@ -1934,7 +2002,7 @@ function ResearchAssetGallery({
         }}
         render={{
           image: (props, { photo }) => {
-            if (photo.asset.kind === "image") {
+            if (photo.asset.kind === "image" && photo.canPreview) {
               return <img {...props} className={`${props.className ?? ""} beast-asset-mosaic-image`} />;
             }
 
@@ -1950,10 +2018,14 @@ function ResearchAssetGallery({
             <div className="beast-asset-thumb-actions">
               <a
                 className="beast-asset-icon-link"
-                href={photo.assetHref}
+                href={photo.assetOpenHref}
                 target="_blank"
                 rel="noreferrer"
                 aria-label={`Open ${photo.asset.name || "Attachment"}`}
+                onClick={(event) => {
+                  event.preventDefault();
+                  void openExternalTarget(photo.assetOpenHref).catch(onError);
+                }}
               >
                 <ExternalLink size={14} aria-hidden="true" />
               </a>
@@ -2153,21 +2225,6 @@ function normalizeBrowserUrl(input: string): string {
   return `https://www.google.com/search?q=${encodeURIComponent(value)}`;
 }
 
-function getEmbeddableBrowserUrl(url: string): string {
-  if (!url) return "";
-
-  try {
-    const parsed = new URL(url);
-    const hostname = parsed.hostname.replace(/^www\./, "").toLowerCase();
-    const blockedHosts = new Set(["google.com", "bing.com", "duckduckgo.com", "x.com", "twitter.com"]);
-    if (blockedHosts.has(hostname)) return "";
-  } catch {
-    return "";
-  }
-
-  return url;
-}
-
 function researchItemHref(item: ResearchItem): string {
   const source = item.source.trim();
   if (item.type === "website") return normalizeBrowserUrl(source);
@@ -2193,9 +2250,52 @@ function researchAssetHref(asset: ResearchAsset, projectPath?: string): string {
   return source;
 }
 
+function researchAssetOpenHref(asset: ResearchAsset, projectPath?: string): string {
+  const source = asset.source.trim();
+
+  if (asset.storage === "project" && projectPath && !/^(?:data|file|https?):/i.test(source) && !source.startsWith("/")) {
+    return fileHref(joinPath(projectPath, source));
+  }
+
+  if (/^(?:data|https?):/i.test(source) || /^file:\/\//i.test(source)) return source;
+  if (source.startsWith("/")) return fileHref(source);
+  return source;
+}
+
+function canPreviewMediaHref(href: string): boolean {
+  const value = href.trim();
+  if (!value) return false;
+  return !/^file:\/\//i.test(value);
+}
+
+async function openExternalTarget(href: string): Promise<void> {
+  const target = href.trim();
+  if (!target) return;
+
+  if (isTauriRuntime()) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("open_external_target", { target });
+    return;
+  }
+
+  const opened = window.open(target, "_blank", "noopener,noreferrer");
+  if (!opened) {
+    throw new Error("Your browser blocked opening this file or link.");
+  }
+}
+
 function localFileHref(path: string): string {
   if (isTauriRuntime()) return convertFileSrc(path);
-  return encodeURI(`file://${path}`);
+  return fileHref(path);
+}
+
+function fileHref(path: string): string {
+  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+  const encodedPath = normalizedPath
+    .split("/")
+    .map((part) => encodeURIComponent(part))
+    .join("/");
+  return `file://${encodedPath}`;
 }
 
 function fileUrlToPath(value: string): string {
@@ -2253,6 +2353,129 @@ function createExternalResearchAsset(source: string, nameInput: string | undefin
     storage: "external",
     createdAt: new Date().toISOString(),
   };
+}
+
+function collectProjectMediaItems(metadata: ProjectMetadata): ProjectMediaItem[] {
+  const mediaItems: ProjectMediaItem[] = [];
+
+  for (const [contextKey, context] of Object.entries(metadata.panels.contexts)) {
+    const contextLabel = contextKey === "project" ? "Project" : contextKey;
+
+    for (const stack of context.researchStacks) {
+      for (const item of stack.items) {
+        if (item.type === "file") {
+          const sourceAsset = researchFileItemAsset(item);
+          if (sourceAsset && shouldIncludeProjectMedia(sourceAsset)) {
+            mediaItems.push(createProjectMediaItem(sourceAsset, contextLabel, stack, item, "source"));
+          }
+        }
+
+        for (const asset of researchItemAssets(item)) {
+          if (shouldIncludeProjectMedia(asset)) {
+            mediaItems.push(createProjectMediaItem(asset, contextLabel, stack, item, asset.id));
+          }
+        }
+      }
+    }
+  }
+
+  return mediaItems;
+}
+
+function createProjectMediaItem(
+  asset: ResearchAsset,
+  contextLabel: string,
+  stack: ResearchStack,
+  item: ResearchItem,
+  idSuffix: string,
+): ProjectMediaItem {
+  return {
+    id: `${contextLabel}:${stack.id}:${item.id}:${idSuffix}`,
+    name: asset.name || assetNameFromSource(asset.source),
+    source: asset.source,
+    kind: projectMediaKind(asset),
+    mimeType: asset.mimeType,
+    size: asset.size,
+    storage: asset.storage,
+    contextLabel,
+    stackTitle: stack.title || "Research Stack",
+    itemTitle: item.title || item.source || "Research Item",
+    asset,
+  };
+}
+
+function researchFileItemAsset(item: ResearchItem): ResearchAsset | undefined {
+  const source = item.source.trim();
+  if (!source) return undefined;
+  const name = item.title.trim() || assetNameFromSource(source);
+
+  return {
+    id: `${item.id}:source`,
+    name,
+    kind: inferResearchAssetKind(`${name} ${source}`),
+    source,
+    storage: "external",
+    createdAt: item.createdAt,
+  };
+}
+
+function shouldIncludeProjectMedia(asset: ResearchAsset): boolean {
+  const source = asset.source.trim();
+  if (!source) return false;
+  if (/^https?:/i.test(source) && projectMediaKind(asset) === "file") return false;
+  return true;
+}
+
+function projectMediaKind(asset: ResearchAsset): ProjectMediaKind {
+  const source = `${asset.name} ${asset.source}`.toLowerCase();
+  const mimeType = asset.mimeType?.toLowerCase() ?? "";
+
+  if (asset.kind === "image" || mimeType.startsWith("image/") || /\.(?:avif|gif|heic|jpe?g|png|svg|webp)(?:$|[\s?#])/i.test(source)) {
+    return "image";
+  }
+
+  if (mimeType.startsWith("video/") || /\.(?:m4v|mov|mp4|mpeg|mpg|ogv|webm)(?:$|[\s?#])/i.test(source)) {
+    return "video";
+  }
+
+  if (mimeType.startsWith("audio/") || /\.(?:aac|aiff?|flac|m4a|mp3|ogg|wav|weba)(?:$|[\s?#])/i.test(source)) {
+    return "audio";
+  }
+
+  if (asset.kind === "pdf" || mimeType === "application/pdf" || /\.pdf(?:$|[\s?#])/i.test(source)) {
+    return "pdf";
+  }
+
+  return "file";
+}
+
+function projectMediaDimensions(
+  media: ProjectMediaItem,
+  measuredDimensions: { width: number; height: number } | undefined,
+): { width: number; height: number } {
+  if (media.kind === "image" || media.kind === "video") return measuredDimensions ?? { width: 160, height: 100 };
+  if (media.kind === "audio") return { width: 130, height: 86 };
+  if (media.kind === "pdf") return { width: 82, height: 112 };
+  return { width: 104, height: 92 };
+}
+
+function projectMediaLabel(media: ProjectMediaItem): string {
+  const parts = [media.name, mediaKindLabel(media.kind), media.stackTitle, media.itemTitle];
+  if (media.size) parts.push(formatFileSize(media.size));
+  return parts.filter(Boolean).join(" · ");
+}
+
+function mediaKindLabel(kind: ProjectMediaKind): string {
+  if (kind === "pdf") return "PDF";
+  return kind.toUpperCase();
+}
+
+function mediaIcon(kind: ProjectMediaKind): LucideIcon {
+  if (kind === "image") return ImagePlus;
+  if (kind === "video") return FileVideo;
+  if (kind === "audio") return FileAudio;
+  if (kind === "pdf") return FileText;
+  return FileIcon;
 }
 
 function inferResearchAssetKind(name: string, mimeType?: string): ResearchAsset["kind"] {
