@@ -474,7 +474,8 @@ body.is-resizing-right-panel {
 .beast-panel-button:focus-visible,
 .beast-drag-handle:focus-visible,
 .beast-panel-icon-submit:focus-visible,
-.beast-source-link:focus-visible {
+.beast-source-link:focus-visible,
+.beast-source-icon-link:focus-visible {
   outline: 2px solid var(--beast-focus);
   outline-offset: 2px;
 }
@@ -516,6 +517,24 @@ body.is-resizing-right-panel {
 
 .beast-panel-button:disabled:hover {
   background: var(--beast-panel);
+}
+
+.beast-source-icon-link {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 34px;
+  width: 34px;
+  height: 34px;
+  border: 1px solid transparent;
+  color: var(--beast-ink);
+  background: transparent;
+  text-decoration: none;
+}
+
+.beast-source-icon-link:hover {
+  border-color: var(--beast-border);
+  color: var(--beast-focus);
+  background: var(--beast-panel-strong);
 }
 
 .beast-browser-fallback {

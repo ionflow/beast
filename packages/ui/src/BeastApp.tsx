@@ -1620,6 +1620,17 @@ function ResearchPanel({
                         <article className="beast-research-item" key={item.id}>
                           <div className="beast-card-heading">
                             <span className="beast-source-type">{item.type === "website" ? "Website" : "File"}</span>
+                            {item.source.trim() ? (
+                              <a
+                                className="beast-source-icon-link"
+                                href={researchItemHref(item)}
+                                target="_blank"
+                                rel="noreferrer"
+                                aria-label="Open Source"
+                              >
+                                <ExternalLink size={15} aria-hidden="true" />
+                              </a>
+                            ) : null}
                             <IconButton label="Delete Source" icon={Trash2} onClick={() => deleteItem(stack.id, item.id)} />
                           </div>
                           <input
@@ -1713,12 +1724,6 @@ function ResearchPanel({
                               onDelete={(assetId) => deleteAsset(stack.id, item.id, assetId)}
                               projectPath={projectPath}
                             />
-                          ) : null}
-                          {item.source.trim() ? (
-                            <a className="beast-source-link" href={researchItemHref(item)} target="_blank" rel="noreferrer">
-                              <ExternalLink size={13} aria-hidden="true" />
-                              Open source
-                            </a>
                           ) : null}
                         </article>
                       ))}
