@@ -103,6 +103,18 @@ interface BridgeCaptureSavedPayload {
   item: unknown;
 }
 
+interface BridgeStackSavedPayload {
+  projectId: string;
+  path: string;
+  contextKey: string;
+  stack: {
+    id: string;
+    title: string;
+    createdAt: string;
+    updatedAt: string;
+  };
+}
+
 interface SaveStatus {
   tone: "idle" | "pending" | "saving" | "saved" | "error";
   message: string;
@@ -263,27 +275,36 @@ export function BeastApp() {
   useEffect(() => {
     if (storage.platform !== "tauri") return undefined;
 
-    let unlisten: (() => void) | undefined;
+    let unlistenCapture: (() => void) | undefined;
+    let unlistenStack: (() => void) | undefined;
     let cancelled = false;
 
     import("@tauri-apps/api/event")
       .then(({ listen }) =>
-        listen<BridgeCaptureSavedPayload>("beast://research-capture", (event) => {
-          handleBridgeCapture(event.payload);
-        }),
+        Promise.all([
+          listen<BridgeCaptureSavedPayload>("beast://research-capture", (event) => {
+            handleBridgeCapture(event.payload);
+          }),
+          listen<BridgeStackSavedPayload>("beast://research-stack", (event) => {
+            handleBridgeStack(event.payload);
+          }),
+        ]),
       )
-      .then((nextUnlisten) => {
+      .then(([nextUnlistenCapture, nextUnlistenStack]) => {
         if (cancelled) {
-          nextUnlisten();
+          nextUnlistenCapture();
+          nextUnlistenStack();
         } else {
-          unlisten = nextUnlisten;
+          unlistenCapture = nextUnlistenCapture;
+          unlistenStack = nextUnlistenStack;
         }
       })
-      .catch(() => setErrorStatus("Browser bridge listener failed"));
+      .catch(() => setErrorStatus("Browser bridge listeners failed"));
 
     return () => {
       cancelled = true;
-      unlisten?.();
+      unlistenCapture?.();
+      unlistenStack?.();
     };
   }, [storage.platform]);
 
@@ -370,6 +391,52 @@ export function BeastApp() {
       };
     });
     setSavedStatus("Browser capture saved");
+  }
+
+  function handleBridgeStack(payload: BridgeStackSavedPayload) {
+    if (!payload.stack?.id) {
+      setErrorStatus("Browser stack payload was missing a stack.");
+      return;
+    }
+
+    updateBundle((current) => {
+      if (current.path !== payload.path) return current;
+
+      return {
+        ...current,
+        metadata: updatePanelContext(current.metadata, payload.contextKey, (context) => {
+          if (context.researchStacks.some((stack) => stack.id === payload.stack.id)) {
+            return {
+              ...context,
+              researchStacks: context.researchStacks.map((stack) =>
+                stack.id === payload.stack.id
+                  ? {
+                      ...stack,
+                      title: payload.stack.title || stack.title,
+                      updatedAt: payload.stack.updatedAt || stack.updatedAt,
+                    }
+                  : stack,
+              ),
+            };
+          }
+
+          return {
+            ...context,
+            researchStacks: [
+              ...context.researchStacks,
+              {
+                id: payload.stack.id,
+                title: payload.stack.title || "Research Stack",
+                items: [],
+                createdAt: payload.stack.createdAt || new Date().toISOString(),
+                updatedAt: payload.stack.updatedAt || new Date().toISOString(),
+              },
+            ],
+          };
+        }),
+      };
+    });
+    setSavedStatus("Browser research stack saved");
   }
 
   async function handleNewProject() {

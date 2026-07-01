@@ -26,7 +26,25 @@
 
         <label>
           Stack
-          <input id="stack-title" value="Chrome Captures" />
+          <div id="stack-picker" class="stack-picker">
+            <select id="stack-select" required></select>
+            <button id="new-stack" class="icon-button" type="button" title="Create a new Beast research stack" aria-label="New Stack">
+              +
+            </button>
+          </div>
+          <div id="stack-create" class="stack-create is-hidden">
+            <input id="new-stack-title" placeholder="Stack title" />
+            <button id="cancel-new-stack" class="icon-button" type="button" title="Cancel new stack" aria-label="Cancel New Stack">
+              X
+            </button>
+            <button id="save-new-stack" class="icon-button" type="button" title="Save new stack" aria-label="Save New Stack">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M5 3h12l2 2v16H5z" />
+                <path d="M8 3v6h8V3" />
+                <path d="M8 15h8v6H8z" />
+              </svg>
+            </button>
+          </div>
         </label>
 
         <label>

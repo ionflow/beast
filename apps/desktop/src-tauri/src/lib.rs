@@ -19,6 +19,7 @@ const CONTEXTS_DIR: &str = "panels/contexts";
 const ASSETS_DIR: &str = "assets/research";
 const BRIDGE_PORT: u16 = 33179;
 const CAPTURE_EVENT: &str = "beast://research-capture";
+const STACK_EVENT: &str = "beast://research-stack";
 
 #[derive(Clone, Default)]
 struct BridgeRegistry {
@@ -31,6 +32,27 @@ struct BridgeProject {
     title: String,
     path: String,
     active: bool,
+}
+
+#[derive(Clone, Serialize)]
+struct BridgeProjectPayload {
+    id: String,
+    title: String,
+    path: String,
+    active: bool,
+    stacks: Vec<BridgeResearchStack>,
+}
+
+#[derive(Clone, Serialize)]
+struct BridgeResearchStack {
+    id: String,
+    title: String,
+    #[serde(rename = "itemCount")]
+    item_count: usize,
+    #[serde(rename = "createdAt")]
+    created_at: String,
+    #[serde(rename = "updatedAt")]
+    updated_at: String,
 }
 
 #[derive(Serialize)]
@@ -52,6 +74,8 @@ struct ProjectFilePayload {
 struct CaptureRequest {
     #[serde(rename = "projectId")]
     project_id: Option<String>,
+    #[serde(rename = "stackId")]
+    stack_id: Option<String>,
     title: Option<String>,
     url: String,
     note: Option<String>,
@@ -83,6 +107,23 @@ struct CaptureSavedPayload {
     #[serde(rename = "stackTitle")]
     stack_title: String,
     item: ResearchItem,
+}
+
+#[derive(Deserialize)]
+struct StackRequest {
+    #[serde(rename = "projectId")]
+    project_id: Option<String>,
+    title: String,
+}
+
+#[derive(Clone, Serialize)]
+struct StackSavedPayload {
+    #[serde(rename = "projectId")]
+    project_id: String,
+    path: String,
+    #[serde(rename = "contextKey")]
+    context_key: String,
+    stack: BridgeResearchStack,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -157,7 +198,9 @@ where
         .into_iter()
         .filter_map(|asset| match asset {
             ResearchAssetWire::Structured(asset) => Some(asset),
-            ResearchAssetWire::Legacy(source) => research_asset_from_source(&source, "project", None, None),
+            ResearchAssetWire::Legacy(source) => {
+                research_asset_from_source(&source, "project", None, None)
+            }
         })
         .collect())
 }
@@ -263,7 +306,10 @@ fn copy_research_asset(
 
     let source = PathBuf::from(&source_path);
     if !source.is_file() {
-        return Err(format!("Attachment source is not a file: {}", source.display()));
+        return Err(format!(
+            "Attachment source is not a file: {}",
+            source.display()
+        ));
     }
 
     let item_id = safe_asset_filename(&research_item_id);
@@ -288,8 +334,13 @@ fn copy_research_asset(
         .map_err(|error| format!("Could not copy {}: {}", source.display(), error))?;
 
     let size = fs::metadata(&target).ok().map(|metadata| metadata.len());
-    research_asset_from_source(&relative_path, "project", Some(original_name.to_string()), size)
-        .ok_or_else(|| "Could not create attachment metadata.".to_string())
+    research_asset_from_source(
+        &relative_path,
+        "project",
+        Some(original_name.to_string()),
+        size,
+    )
+    .ok_or_else(|| "Could not create attachment metadata.".to_string())
 }
 
 fn read_panel_files(root: &Path) -> Result<Vec<ProjectFilePayload>, String> {
@@ -442,9 +493,7 @@ fn parse_content_length(headers: &str) -> Option<usize> {
 }
 
 fn find_header_end(request: &[u8]) -> Option<usize> {
-    request
-        .windows(4)
-        .position(|window| window == b"\r\n\r\n")
+    request.windows(4).position(|window| window == b"\r\n\r\n")
 }
 
 fn handle_bridge_request(
@@ -471,6 +520,7 @@ fn handle_bridge_request(
         ("GET", "/health") => Ok(json!({ "ok": true, "app": "Beast", "port": BRIDGE_PORT })),
         ("GET", "/projects") => bridge_projects_response(registry),
         ("POST", "/captures") => bridge_capture_request(body, registry, app_handle),
+        ("POST", "/stacks") => bridge_stack_request(body, registry, app_handle),
         _ => Err(BridgeError::not_found("Unknown Beast bridge endpoint.")),
     }
 }
@@ -479,14 +529,25 @@ fn bridge_projects_response(registry: BridgeRegistry) -> Result<Value, BridgeErr
     let projects = registry
         .projects
         .lock()
-        .map_err(|_| BridgeError::server("Could not lock bridge project registry."))?;
+        .map_err(|_| BridgeError::server("Could not lock bridge project registry."))?
+        .clone();
     let active_project_id = projects
         .iter()
         .find(|project| project.active)
         .map(|project| project.id.clone());
+    let project_payloads: Vec<BridgeProjectPayload> = projects
+        .iter()
+        .map(|project| BridgeProjectPayload {
+            id: project.id.clone(),
+            title: project.title.clone(),
+            path: project.path.clone(),
+            active: project.active,
+            stacks: bridge_project_stack_summaries(project),
+        })
+        .collect();
 
     Ok(json!({
-        "projects": projects.clone(),
+        "projects": project_payloads,
         "activeProjectId": active_project_id,
     }))
 }
@@ -497,20 +558,45 @@ fn bridge_capture_request(
     app_handle: tauri::AppHandle,
 ) -> Result<Value, BridgeError> {
     if body.is_empty() {
-        return Err(BridgeError::bad_request("Invalid capture payload: request body was empty."));
+        return Err(BridgeError::bad_request(
+            "Invalid capture payload: request body was empty.",
+        ));
     }
 
     let capture: CaptureRequest = serde_json::from_slice(body)
         .map_err(|error| BridgeError::bad_request(format!("Invalid capture payload: {}", error)))?;
     let project = resolve_capture_project(&registry, capture.project_id.as_deref())?;
-    let saved = save_capture_to_project(&project, capture)
-        .map_err(BridgeError::server)?;
+    let saved = save_capture_to_project(&project, capture).map_err(BridgeError::server)?;
 
     let _ = app_handle.emit(CAPTURE_EVENT, saved.clone());
 
     Ok(json!({
         "ok": true,
         "capture": saved,
+    }))
+}
+
+fn bridge_stack_request(
+    body: &[u8],
+    registry: BridgeRegistry,
+    app_handle: tauri::AppHandle,
+) -> Result<Value, BridgeError> {
+    if body.is_empty() {
+        return Err(BridgeError::bad_request(
+            "Invalid stack payload: request body was empty.",
+        ));
+    }
+
+    let request: StackRequest = serde_json::from_slice(body)
+        .map_err(|error| BridgeError::bad_request(format!("Invalid stack payload: {}", error)))?;
+    let project = resolve_capture_project(&registry, request.project_id.as_deref())?;
+    let saved = save_stack_to_project(&project, request).map_err(BridgeError::server)?;
+
+    let _ = app_handle.emit(STACK_EVENT, saved.clone());
+
+    Ok(json!({
+        "ok": true,
+        "stack": saved.stack,
     }))
 }
 
@@ -533,7 +619,9 @@ fn resolve_capture_project(
         .iter()
         .find(|project| project.active)
         .cloned()
-        .ok_or_else(|| BridgeError::bad_request("No Beast project is registered with the browser bridge."))
+        .ok_or_else(|| {
+            BridgeError::bad_request("No Beast project is registered with the browser bridge.")
+        })
 }
 
 fn save_capture_to_project(
@@ -579,7 +667,13 @@ fn save_capture_to_project(
 
     let context_path = root.join(CONTEXTS_DIR).join("project.json");
     let mut context = read_panel_context_file(&context_path, &context_key)?;
-    let stack_id = upsert_research_capture(&mut context, stack_title.clone(), item.clone(), now);
+    let stack_id = upsert_research_capture(
+        &mut context,
+        capture.stack_id.as_deref(),
+        stack_title.clone(),
+        item.clone(),
+        now,
+    );
     write_panel_context_file(&context_path, &context_key, &context)?;
 
     Ok(CaptureSavedPayload {
@@ -589,6 +683,30 @@ fn save_capture_to_project(
         stack_id,
         stack_title,
         item,
+    })
+}
+
+fn save_stack_to_project(
+    project: &BridgeProject,
+    request: StackRequest,
+) -> Result<StackSavedPayload, String> {
+    let root = PathBuf::from(&project.path);
+    let context_key = "project".to_string();
+    let title = request.title.trim();
+    if title.is_empty() {
+        return Err("Stack title is required.".to_string());
+    }
+
+    let context_path = root.join(CONTEXTS_DIR).join("project.json");
+    let mut context = read_panel_context_file(&context_path, &context_key)?;
+    let stack = create_research_stack(&mut context, title.to_string(), iso_timestamp());
+    write_panel_context_file(&context_path, &context_key, &context)?;
+
+    Ok(StackSavedPayload {
+        project_id: project.id.clone(),
+        path: project.path.clone(),
+        context_key,
+        stack: research_stack_summary(&stack),
     })
 }
 
@@ -622,15 +740,69 @@ fn write_panel_context_file(
     next_context.key = Some(context_key.to_string());
     let content = serde_json::to_string_pretty(&next_context)
         .map_err(|error| format!("Could not serialize capture context: {}", error))?;
-    fs::write(path, content).map_err(|error| format!("Could not write {}: {}", path.display(), error))
+    fs::write(path, content)
+        .map_err(|error| format!("Could not write {}: {}", path.display(), error))
+}
+
+fn bridge_project_stack_summaries(project: &BridgeProject) -> Vec<BridgeResearchStack> {
+    let context_path = PathBuf::from(&project.path)
+        .join(CONTEXTS_DIR)
+        .join("project.json");
+    read_panel_context_file(&context_path, "project")
+        .map(|context| {
+            context
+                .research_stacks
+                .iter()
+                .map(research_stack_summary)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn research_stack_summary(stack: &ResearchStack) -> BridgeResearchStack {
+    BridgeResearchStack {
+        id: stack.id.clone(),
+        title: stack.title.clone(),
+        item_count: stack.items.len(),
+        created_at: stack.created_at.clone(),
+        updated_at: stack.updated_at.clone(),
+    }
+}
+
+fn create_research_stack(context: &mut PanelContext, title: String, now: String) -> ResearchStack {
+    let stack = ResearchStack {
+        id: format!("stack-{}", id_suffix()),
+        title,
+        items: Vec::new(),
+        created_at: now.clone(),
+        updated_at: now,
+    };
+    context.research_stacks.push(stack.clone());
+    stack
 }
 
 fn upsert_research_capture(
     context: &mut PanelContext,
+    stack_id: Option<&str>,
     stack_title: String,
     item: ResearchItem,
     now: String,
 ) -> String {
+    if let Some(stack_id) = stack_id
+        .map(str::trim)
+        .filter(|stack_id| !stack_id.is_empty())
+    {
+        if let Some(stack) = context
+            .research_stacks
+            .iter_mut()
+            .find(|stack| stack.id == stack_id)
+        {
+            stack.items.push(item);
+            stack.updated_at = now;
+            return stack.id.clone();
+        }
+    }
+
     if let Some(stack) = context
         .research_stacks
         .iter_mut()
@@ -738,7 +910,10 @@ fn unique_asset_target(
         }
     }
 
-    Err(format!("Could not create a unique attachment filename for {}", filename))
+    Err(format!(
+        "Could not create a unique attachment filename for {}",
+        filename
+    ))
 }
 
 fn research_asset_from_source(
@@ -762,7 +937,12 @@ fn research_asset_from_source(
         kind: infer_asset_kind(&name, mime_type.as_deref()).to_string(),
         name,
         source: source.to_string(),
-        storage: if storage == "external" { "external" } else { "project" }.to_string(),
+        storage: if storage == "external" {
+            "external"
+        } else {
+            "project"
+        }
+        .to_string(),
         mime_type,
         size,
         created_at: iso_timestamp(),
@@ -797,7 +977,9 @@ fn infer_asset_kind(name: &str, mime_type: Option<&str>) -> &'static str {
         return "image";
     }
 
-    if normalized_mime == "application/pdf" || extension_for_name(&normalized_name).as_deref() == Some("pdf") {
+    if normalized_mime == "application/pdf"
+        || extension_for_name(&normalized_name).as_deref() == Some("pdf")
+    {
         return "pdf";
     }
 
@@ -842,7 +1024,8 @@ fn write_json_response(stream: &mut TcpStream, status: u16, body: Value) -> std:
         500 => "Internal Server Error",
         _ => "OK",
     };
-    let body = serde_json::to_string(&body).unwrap_or_else(|_| "{\"error\":\"Serialization failed\"}".to_string());
+    let body = serde_json::to_string(&body)
+        .unwrap_or_else(|_| "{\"error\":\"Serialization failed\"}".to_string());
     let response = format!(
         "HTTP/1.1 {} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Headers: content-type\r\nAccess-Control-Allow-Methods: GET,POST,OPTIONS\r\nConnection: close\r\n\r\n{}",
         status,
@@ -958,7 +1141,10 @@ mod tests {
         assert_eq!(first.kind, "pdf");
         assert_eq!(first.storage, "project");
         assert_eq!(first.source, "assets/research/research-item-1/source.pdf");
-        assert_eq!(second.source, "assets/research/research-item-1/source-2.pdf");
+        assert_eq!(
+            second.source,
+            "assets/research/research-item-1/source-2.pdf"
+        );
         assert!(root.join(&first.source).exists());
         assert!(root.join(&second.source).exists());
 
@@ -981,6 +1167,38 @@ mod tests {
         let result = unique_asset_target(&root, "../outside", "file.pdf");
 
         assert!(result.is_err());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn creates_and_lists_bridge_research_stacks() {
+        let root = temp_dir("beast-stack-root");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join(PROJECT_FILE), "{}").unwrap();
+        let project = BridgeProject {
+            id: root.to_string_lossy().to_string(),
+            title: "Alien Noir".to_string(),
+            path: root.to_string_lossy().to_string(),
+            active: true,
+        };
+
+        let saved = save_stack_to_project(
+            &project,
+            StackRequest {
+                project_id: Some(project.id.clone()),
+                title: "Additional Videos".to_string(),
+            },
+        )
+        .unwrap();
+        let summaries = bridge_project_stack_summaries(&project);
+
+        assert_eq!(saved.stack.title, "Additional Videos");
+        assert_eq!(saved.stack.item_count, 0);
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].id, saved.stack.id);
+        assert_eq!(summaries[0].title, "Additional Videos");
+        assert!(root.join(CONTEXTS_DIR).join("project.json").exists());
+
         let _ = fs::remove_dir_all(root);
     }
 

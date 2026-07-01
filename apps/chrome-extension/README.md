@@ -16,6 +16,7 @@ Reload the unpacked extension from `chrome://extensions` after changing files in
 
 - **Capture selection in Beast** from the page context menu copies Chrome's selected text into the side panel Selection field, fills the current page title and URL, and opens the side panel.
 - **Use Current Tab** fills the title, URL, and current selected text from the active Chrome tab without saving anything.
+- **Stack** defaults to the newest project research stack; use the dropdown to choose another stack or the **+** button to create one before saving.
 - **Save to Beast** sends the current form values to the selected saved Beast desktop project.
 - **Refresh Projects** reloads the saved/open Beast projects registered by the desktop app's localhost bridge.
 
