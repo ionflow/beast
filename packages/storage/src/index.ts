@@ -29,6 +29,20 @@ export interface PanelImagePrompt {
   createdAt: string;
 }
 
+export type ResearchAssetKind = "image" | "pdf" | "file";
+export type ResearchAssetStorage = "project" | "external";
+
+export interface ResearchAsset {
+  id: string;
+  name: string;
+  kind: ResearchAssetKind;
+  source: string;
+  storage: ResearchAssetStorage;
+  mimeType?: string;
+  size?: number;
+  createdAt: string;
+}
+
 export interface ResearchItem {
   id: string;
   type: "website" | "file";
@@ -36,7 +50,7 @@ export interface ResearchItem {
   source: string;
   note: string;
   quote?: string;
-  assets: string[];
+  assets: ResearchAsset[];
   createdAt: string;
   updatedAt: string;
 }
@@ -585,10 +599,87 @@ function hydrateResearchItem(item: unknown): ResearchItem | undefined {
     source: typeof item.source === "string" ? item.source : "",
     note: typeof item.note === "string" ? item.note : "",
     quote: typeof item.quote === "string" ? item.quote : undefined,
-    assets: Array.isArray(item.assets) ? item.assets.filter((asset): asset is string => typeof asset === "string") : [],
+    assets: Array.isArray(item.assets) ? item.assets.map(hydrateResearchAsset).filter(isDefined) : [],
     createdAt: typeof item.createdAt === "string" ? item.createdAt : now,
     updatedAt: typeof item.updatedAt === "string" ? item.updatedAt : now,
   };
+}
+
+function hydrateResearchAsset(asset: unknown): ResearchAsset | undefined {
+  if (typeof asset === "string") {
+    const source = asset.trim();
+    if (!source) return undefined;
+
+    const name = assetNameFromSource(source);
+    return {
+      id: deterministicAssetId(source),
+      name,
+      kind: inferResearchAssetKind(name, undefined),
+      source,
+      storage: "project",
+      createdAt: new Date().toISOString(),
+    };
+  }
+
+  if (!isRecord(asset) || typeof asset.source !== "string" || !asset.source.trim()) return undefined;
+  const source = asset.source.trim();
+  const name = typeof asset.name === "string" && asset.name.trim() ? asset.name.trim() : assetNameFromSource(source);
+  const mimeType = typeof asset.mimeType === "string" && asset.mimeType.trim() ? asset.mimeType.trim() : undefined;
+
+  return {
+    id: typeof asset.id === "string" && asset.id.trim() ? asset.id.trim() : deterministicAssetId(source),
+    name,
+    kind:
+      asset.kind === "image" || asset.kind === "pdf" || asset.kind === "file"
+        ? asset.kind
+        : inferResearchAssetKind(`${name} ${source}`, mimeType),
+    source,
+    storage: asset.storage === "external" ? "external" : "project",
+    mimeType,
+    size: typeof asset.size === "number" && Number.isFinite(asset.size) && asset.size >= 0 ? Math.round(asset.size) : undefined,
+    createdAt: typeof asset.createdAt === "string" ? asset.createdAt : new Date().toISOString(),
+  };
+}
+
+function inferResearchAssetKind(name: string, mimeType: string | undefined): ResearchAssetKind {
+  const normalizedMime = mimeType?.toLowerCase() ?? "";
+  const normalizedName = name.toLowerCase();
+
+  if (
+    normalizedMime.startsWith("image/") ||
+    normalizedName.includes("data:image/") ||
+    /\.(?:avif|gif|jpe?g|png|webp)(?:$|[\s?#])/i.test(normalizedName)
+  ) {
+    return "image";
+  }
+
+  if (normalizedMime === "application/pdf" || normalizedName.includes("data:application/pdf") || /\.pdf(?:$|[\s?#])/i.test(normalizedName)) {
+    return "pdf";
+  }
+
+  return "file";
+}
+
+function assetNameFromSource(source: string): string {
+  const withoutQuery = source.split(/[?#]/, 1)[0] ?? source;
+  const segments = withoutQuery.split(/[\\/]/).filter(Boolean);
+  return safeDecodeURIComponent(segments.at(-1) ?? "Attachment");
+}
+
+function deterministicAssetId(source: string): string {
+  let hash = 0;
+  for (let index = 0; index < source.length; index += 1) {
+    hash = (hash * 31 + source.charCodeAt(index)) >>> 0;
+  }
+  return `asset-${hash.toString(36)}`;
+}
+
+function safeDecodeURIComponent(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

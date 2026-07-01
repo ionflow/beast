@@ -1,5 +1,5 @@
 use base64::prelude::*;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{json, Value};
 use std::{
     fs,
@@ -118,12 +118,48 @@ struct ResearchItem {
     note: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     quote: Option<String>,
-    #[serde(default)]
-    assets: Vec<String>,
+    #[serde(default, deserialize_with = "deserialize_research_assets")]
+    assets: Vec<ResearchAsset>,
     #[serde(rename = "createdAt")]
     created_at: String,
     #[serde(rename = "updatedAt")]
     updated_at: String,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+struct ResearchAsset {
+    id: String,
+    name: String,
+    kind: String,
+    source: String,
+    storage: String,
+    #[serde(rename = "mimeType", skip_serializing_if = "Option::is_none")]
+    mime_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    size: Option<u64>,
+    #[serde(rename = "createdAt")]
+    created_at: String,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum ResearchAssetWire {
+    Structured(ResearchAsset),
+    Legacy(String),
+}
+
+fn deserialize_research_assets<'de, D>(deserializer: D) -> Result<Vec<ResearchAsset>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let assets = Vec::<ResearchAssetWire>::deserialize(deserializer)?;
+    Ok(assets
+        .into_iter()
+        .filter_map(|asset| match asset {
+            ResearchAssetWire::Structured(asset) => Some(asset),
+            ResearchAssetWire::Legacy(source) => research_asset_from_source(&source, "project", None, None),
+        })
+        .collect())
 }
 
 #[tauri::command]
@@ -212,6 +248,48 @@ fn register_bridge_project(
 
     projects.push(project);
     Ok(())
+}
+
+#[tauri::command]
+fn copy_research_asset(
+    project_path: String,
+    research_item_id: String,
+    source_path: String,
+) -> Result<ResearchAsset, String> {
+    let root = PathBuf::from(project_path);
+    if !root.join(PROJECT_FILE).exists() {
+        return Err("Project folder must contain project.json before attaching files.".to_string());
+    }
+
+    let source = PathBuf::from(&source_path);
+    if !source.is_file() {
+        return Err(format!("Attachment source is not a file: {}", source.display()));
+    }
+
+    let item_id = safe_asset_filename(&research_item_id);
+    if item_id.trim_matches('-').is_empty() {
+        return Err("Research item id is required for attachments.".to_string());
+    }
+
+    let original_name = source
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or("Attachment");
+    let safe_name = safe_asset_filename(original_name);
+    let relative_dir = format!("{}/{}", ASSETS_DIR, item_id);
+    let (target, relative_path) = unique_asset_target(&root, &relative_dir, &safe_name)?;
+
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("Could not create {}: {}", parent.display(), error))?;
+    }
+    fs::copy(&source, &target)
+        .map_err(|error| format!("Could not copy {}: {}", source.display(), error))?;
+
+    let size = fs::metadata(&target).ok().map(|metadata| metadata.len());
+    research_asset_from_source(&relative_path, "project", Some(original_name.to_string()), size)
+        .ok_or_else(|| "Could not create attachment metadata.".to_string())
 }
 
 fn read_panel_files(root: &Path) -> Result<Vec<ProjectFilePayload>, String> {
@@ -578,8 +656,8 @@ fn save_capture_screenshot(
     root: &Path,
     item_id: &str,
     screenshot: CaptureScreenshot,
-) -> Result<String, String> {
-    let (_, base64_data) = screenshot
+) -> Result<ResearchAsset, String> {
+    let (data_url_header, base64_data) = screenshot
         .data_url
         .split_once(',')
         .ok_or_else(|| "Screenshot must be a data URL.".to_string())?;
@@ -592,8 +670,8 @@ fn save_capture_screenshot(
         .map(safe_asset_filename)
         .filter(|filename| !filename.is_empty())
         .unwrap_or_else(|| format!("{}.jpg", item_id));
-    let relative_path = format!("{}/{}", ASSETS_DIR, filename);
-    let target = safe_bundle_path(root, &relative_path)?;
+    let relative_dir = format!("{}/{}", ASSETS_DIR, safe_asset_filename(item_id));
+    let (target, relative_path) = unique_asset_target(root, &relative_dir, &filename)?;
 
     if let Some(parent) = target.parent() {
         fs::create_dir_all(parent)
@@ -602,7 +680,16 @@ fn save_capture_screenshot(
     fs::write(&target, bytes)
         .map_err(|error| format!("Could not write {}: {}", target.display(), error))?;
 
-    Ok(relative_path)
+    let mime_type = data_url_header
+        .strip_prefix("data:")
+        .and_then(|header| header.split(';').next())
+        .filter(|mime_type| !mime_type.is_empty())
+        .map(ToString::to_string);
+    let size = fs::metadata(&target).ok().map(|metadata| metadata.len());
+
+    research_asset_from_source(&relative_path, "project", Some(filename), size)
+        .map(|asset| ResearchAsset { mime_type, ..asset })
+        .ok_or_else(|| "Could not create screenshot metadata.".to_string())
 }
 
 fn safe_asset_filename(filename: &str) -> String {
@@ -616,6 +703,135 @@ fn safe_asset_filename(filename: &str) -> String {
             }
         })
         .collect()
+}
+
+fn unique_asset_target(
+    root: &Path,
+    relative_dir: &str,
+    safe_filename: &str,
+) -> Result<(PathBuf, String), String> {
+    let filename = if safe_filename.trim_matches('-').is_empty() {
+        "Attachment".to_string()
+    } else {
+        safe_filename.to_string()
+    };
+    let path = Path::new(&filename);
+    let stem = path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .filter(|stem| !stem.is_empty())
+        .unwrap_or("Attachment");
+    let extension = path.extension().and_then(|extension| extension.to_str());
+
+    for index in 1..=999 {
+        let candidate_name = if index == 1 {
+            filename.clone()
+        } else if let Some(extension) = extension {
+            format!("{}-{}.{}", stem, index, extension)
+        } else {
+            format!("{}-{}", stem, index)
+        };
+        let relative_path = format!("{}/{}", relative_dir, candidate_name);
+        let target = safe_bundle_path(root, &relative_path)?;
+        if !target.exists() {
+            return Ok((target, relative_path));
+        }
+    }
+
+    Err(format!("Could not create a unique attachment filename for {}", filename))
+}
+
+fn research_asset_from_source(
+    source: &str,
+    storage: &str,
+    name: Option<String>,
+    size: Option<u64>,
+) -> Option<ResearchAsset> {
+    let source = source.trim();
+    if source.is_empty() {
+        return None;
+    }
+
+    let name = name
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or_else(|| asset_name_from_source(source));
+    let mime_type = infer_mime_type(&name);
+
+    Some(ResearchAsset {
+        id: format!("asset-{}", deterministic_id(source)),
+        kind: infer_asset_kind(&name, mime_type.as_deref()).to_string(),
+        name,
+        source: source.to_string(),
+        storage: if storage == "external" { "external" } else { "project" }.to_string(),
+        mime_type,
+        size,
+        created_at: iso_timestamp(),
+    })
+}
+
+fn asset_name_from_source(source: &str) -> String {
+    let without_query = source
+        .split(['?', '#'])
+        .next()
+        .filter(|value| !value.is_empty())
+        .unwrap_or(source);
+
+    without_query
+        .split(['/', '\\'])
+        .filter(|segment| !segment.is_empty())
+        .last()
+        .unwrap_or("Attachment")
+        .to_string()
+}
+
+fn infer_asset_kind(name: &str, mime_type: Option<&str>) -> &'static str {
+    let normalized_name = name.to_ascii_lowercase();
+    let normalized_mime = mime_type.unwrap_or_default().to_ascii_lowercase();
+
+    if normalized_mime.starts_with("image/")
+        || matches!(
+            extension_for_name(&normalized_name).as_deref(),
+            Some("avif" | "gif" | "jpg" | "jpeg" | "png" | "webp")
+        )
+    {
+        return "image";
+    }
+
+    if normalized_mime == "application/pdf" || extension_for_name(&normalized_name).as_deref() == Some("pdf") {
+        return "pdf";
+    }
+
+    "file"
+}
+
+fn infer_mime_type(name: &str) -> Option<String> {
+    let extension = extension_for_name(name)?;
+    let mime_type = match extension.as_str() {
+        "avif" => "image/avif",
+        "gif" => "image/gif",
+        "jpg" | "jpeg" => "image/jpeg",
+        "pdf" => "application/pdf",
+        "png" => "image/png",
+        "webp" => "image/webp",
+        _ => return None,
+    };
+
+    Some(mime_type.to_string())
+}
+
+fn extension_for_name(name: &str) -> Option<String> {
+    Path::new(name)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| extension.to_ascii_lowercase())
+}
+
+fn deterministic_id(value: &str) -> String {
+    let mut hash: u32 = 0;
+    for byte in value.bytes() {
+        hash = hash.wrapping_mul(31).wrapping_add(byte as u32);
+    }
+    format!("{:x}", hash)
 }
 
 fn write_json_response(stream: &mut TcpStream, status: u16, body: Value) -> std::io::Result<()> {
@@ -689,6 +905,7 @@ pub fn run() {
         })
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
+            copy_research_asset,
             register_bridge_project,
             read_project_bundle,
             write_project_bundle
@@ -713,5 +930,61 @@ mod tests {
         let headers = "GET /projects HTTP/1.1\r\nHost: 127.0.0.1:33179";
 
         assert_eq!(parse_content_length(headers), None);
+    }
+
+    #[test]
+    fn copies_research_assets_with_unique_project_paths() {
+        let root = temp_dir("beast-copy-root");
+        let sources = temp_dir("beast-copy-sources");
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&sources).unwrap();
+        fs::write(root.join(PROJECT_FILE), "{}").unwrap();
+        let pdf = sources.join("source.pdf");
+        fs::write(&pdf, b"%PDF").unwrap();
+
+        let first = copy_research_asset(
+            root.to_string_lossy().to_string(),
+            "research-item-1".to_string(),
+            pdf.to_string_lossy().to_string(),
+        )
+        .unwrap();
+        let second = copy_research_asset(
+            root.to_string_lossy().to_string(),
+            "research-item-1".to_string(),
+            pdf.to_string_lossy().to_string(),
+        )
+        .unwrap();
+
+        assert_eq!(first.kind, "pdf");
+        assert_eq!(first.storage, "project");
+        assert_eq!(first.source, "assets/research/research-item-1/source.pdf");
+        assert_eq!(second.source, "assets/research/research-item-1/source-2.pdf");
+        assert!(root.join(&first.source).exists());
+        assert!(root.join(&second.source).exists());
+
+        let _ = fs::remove_dir_all(root);
+        let _ = fs::remove_dir_all(sources);
+    }
+
+    #[test]
+    fn classifies_image_pdf_and_generic_assets() {
+        assert_eq!(infer_asset_kind("frame.jpg", None), "image");
+        assert_eq!(infer_asset_kind("report.pdf", None), "pdf");
+        assert_eq!(infer_asset_kind("notes.txt", None), "file");
+    }
+
+    #[test]
+    fn rejects_unsafe_project_asset_paths() {
+        let root = temp_dir("beast-unsafe-root");
+        fs::create_dir_all(&root).unwrap();
+
+        let result = unique_asset_target(&root, "../outside", "file.pdf");
+
+        assert!(result.is_err());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    fn temp_dir(prefix: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("{}-{}", prefix, id_suffix()))
     }
 }

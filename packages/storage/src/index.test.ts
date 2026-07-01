@@ -119,4 +119,88 @@ describe("web storage adapter", () => {
     expect(loaded.metadata.panels.browser.currentUrl).toBe("https://example.com");
     expect(loaded.metadata.panels.contexts["scene:int-room-day:1"]?.notecards[0]?.title).toBe("Beat");
   });
+
+  it("hydrates legacy string research assets as project files", () => {
+    const bundle = createProjectBundle({ title: "Legacy Assets" });
+    const context = createPanelContextMetadata();
+    context.researchStacks.push({
+      id: "stack-1",
+      title: "Captures",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      items: [
+        {
+          id: "research-item-1",
+          type: "website",
+          title: "Roswell",
+          source: "https://example.com",
+          note: "",
+          assets: ["assets/research/chrome-capture.jpg"] as unknown as [],
+          createdAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-01-01T00:00:00.000Z",
+        },
+      ],
+    });
+    bundle.metadata.panels.contexts.project = context;
+
+    const hydrated = validateProjectBundle(bundle);
+    const asset = hydrated.metadata.panels.contexts.project?.researchStacks[0]?.items[0]?.assets[0];
+
+    expect(asset).toMatchObject({
+      name: "chrome-capture.jpg",
+      kind: "image",
+      source: "assets/research/chrome-capture.jpg",
+      storage: "project",
+    });
+  });
+
+  it("round trips structured research assets through exported project files", async () => {
+    const adapter = createWebStorageAdapter();
+    const bundle = createProjectBundle({ title: "Structured Assets" });
+    const context = createPanelContextMetadata();
+    context.researchStacks.push({
+      id: "stack-1",
+      title: "Captures",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      items: [
+        {
+          id: "research-item-1",
+          type: "website",
+          title: "Archive",
+          source: "https://example.com",
+          note: "",
+          assets: [
+            {
+              id: "asset-1",
+              name: "source.pdf",
+              kind: "pdf",
+              source: "assets/research/research-item-1/source.pdf",
+              storage: "project",
+              mimeType: "application/pdf",
+              size: 1024,
+              createdAt: "2026-01-01T00:00:00.000Z",
+            },
+          ],
+          createdAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-01-01T00:00:00.000Z",
+        },
+      ],
+    });
+    bundle.metadata.panels.contexts.project = context;
+
+    const files = adapter.exportProjectFiles(bundle).map((file) => new File([file.content], file.name));
+    const loaded = await adapter.loadProject({ kind: "files", files });
+    const asset = loaded.metadata.panels.contexts.project?.researchStacks[0]?.items[0]?.assets[0];
+
+    expect(asset).toMatchObject({
+      id: "asset-1",
+      name: "source.pdf",
+      kind: "pdf",
+      source: "assets/research/research-item-1/source.pdf",
+      storage: "project",
+      mimeType: "application/pdf",
+      size: 1024,
+    });
+  });
 });

@@ -26,7 +26,7 @@ The extension talks to the Beast desktop localhost bridge at `http://127.0.0.1:3
 Captures are saved into the selected project as:
 
 - research data under `panels/contexts/project.json`
-- screenshots under `assets/research/*.jpg`
+- screenshots under `assets/research/<research-item-id>/*.jpg`
 
 The web app does not run the localhost bridge.
 

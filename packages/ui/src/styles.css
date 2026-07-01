@@ -509,6 +509,15 @@ body.is-resizing-right-panel {
   background: var(--beast-panel-strong);
 }
 
+.beast-panel-button:disabled {
+  color: rgba(111, 106, 100, 0.48);
+  cursor: not-allowed;
+}
+
+.beast-panel-button:disabled:hover {
+  background: var(--beast-panel);
+}
+
 .beast-browser-fallback {
   display: flex;
   justify-content: flex-end;
@@ -540,12 +549,6 @@ body.is-resizing-right-panel {
   white-space: pre-wrap;
 }
 
-.beast-capture-assets {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
 .beast-browser-frame {
   flex: 1;
   min-height: 320px;
@@ -568,9 +571,81 @@ body.is-resizing-right-panel {
 }
 
 .beast-panel-list,
-.beast-research-items {
+.beast-research-items,
+.beast-asset-list,
+.beast-asset-reference-form {
   display: grid;
   gap: 10px;
+}
+
+.beast-asset-list,
+.beast-asset-reference-form {
+  gap: 8px;
+}
+
+.beast-asset-list {
+  display: block;
+  width: 100%;
+}
+
+.beast-asset-mosaic {
+  align-items: flex-start;
+  max-width: 100%;
+}
+
+.beast-asset-mosaic-photo {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid var(--beast-border);
+  color: var(--beast-muted);
+  background: var(--beast-panel);
+}
+
+.beast-asset-mosaic-photo-image {
+  background: var(--beast-panel-strong);
+}
+
+.beast-asset-mosaic-image,
+.beast-asset-mosaic-file {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.beast-asset-mosaic-image {
+  object-fit: contain;
+}
+
+.beast-asset-mosaic-file {
+  display: grid;
+  place-items: center;
+  background: var(--beast-panel);
+}
+
+.beast-asset-thumb-actions {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  display: flex;
+  gap: 3px;
+}
+
+.beast-asset-thumb-actions .beast-icon-button,
+.beast-asset-icon-link {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border: 1px solid rgba(25, 23, 21, 0.22);
+  color: var(--beast-ink);
+  background: rgba(255, 253, 248, 0.92);
+}
+
+.beast-asset-thumb-actions .beast-icon-button:hover,
+.beast-asset-icon-link:hover {
+  border-color: var(--beast-focus);
+  color: var(--beast-focus);
+  background: var(--beast-panel-strong);
 }
 
 .beast-notecard-grid,

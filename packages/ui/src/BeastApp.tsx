@@ -17,6 +17,7 @@ import {
   type PanelContextMetadata,
   type ProjectBundle,
   type ProjectMetadata,
+  type ResearchAsset,
   type ResearchItem,
   type ResearchStack,
   type RightPanelMode,
@@ -32,6 +33,7 @@ import {
   Eye,
   EyeOff,
   ExternalLink,
+  File as FileIcon,
   FileText,
   FilePlus2,
   FolderOpen,
@@ -52,6 +54,7 @@ import {
   PanelLeftClose,
   PanelRight,
   PanelRightClose,
+  Paperclip,
   Parentheses,
   Plus,
   RotateCw,
@@ -81,6 +84,9 @@ import {
   useState,
 } from "react";
 import { createPortal } from "react-dom";
+import { convertFileSrc } from "@tauri-apps/api/core";
+import { RowsPhotoAlbum, type Photo } from "react-photo-album";
+import "react-photo-album/rows.css";
 
 declare global {
   interface Window {
@@ -102,6 +108,20 @@ interface SaveStatus {
   message: string;
   at?: string;
 }
+
+interface AppSessionState {
+  lastProjectPath?: string;
+  lastProjectTitle?: string;
+  lastOpenedAt?: string;
+}
+
+interface ResearchAssetPhoto extends Photo {
+  asset: ResearchAsset;
+  assetHref: string;
+}
+
+const APP_SESSION_KEY = "beast:fountain-editor:session";
+const TRANSPARENT_IMAGE_SRC = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==";
 
 const screenplayCommandButtons: Array<{ command: EditorCommand; label: string; icon: LucideIcon }> = [
   { command: "force-scene-heading", label: "Scene", icon: Heading1 },
@@ -165,23 +185,63 @@ export function BeastApp() {
         setSavedStatus("Draft restored");
       })
       .catch(() => {
+        writeAppSession({});
         setSaveStatus({ tone: "idle", message: "Ready" });
       });
   }, [storage]);
 
   useEffect(() => {
-    if (storage.platform !== "web") return;
+    if (storage.platform !== "tauri") return;
+
+    const session = readAppSession();
+    if (!session.lastProjectPath) return;
+
+    setSavingStatus("Restoring project");
+    storage
+      .loadProject({ kind: "path", path: session.lastProjectPath })
+      .then((project) => {
+        setBundle(project);
+        setSavedStatus("Project restored");
+      })
+      .catch(() => {
+        setSaveStatus({ tone: "idle", message: "Ready" });
+      });
+  }, [storage]);
+
+  useEffect(() => {
+    if (storage.platform === "tauri" && !bundle.path) return;
 
     const handle = window.setTimeout(() => {
+      if (storage.platform === "web") {
+        setSavingStatus("Autosaving");
+        storage
+          .saveProject(bundle, { kind: "local" })
+          .then(() => setSavedStatus("Local draft saved"))
+          .catch((error) => setErrorStatus(error));
+        return;
+      }
+
+      if (!bundle.path) return;
+
       setSavingStatus("Autosaving");
       storage
-        .saveProject(bundle, { kind: "local" })
-        .then(() => setSavedStatus("Local draft saved"))
+        .saveProject(bundle, { kind: "path", path: bundle.path })
+        .then(() => setSavedStatus("Autosaved"))
         .catch((error) => setErrorStatus(error));
-    }, 600);
+    }, storage.platform === "web" ? 600 : 900);
 
     return () => window.clearTimeout(handle);
   }, [bundle, storage]);
+
+  useEffect(() => {
+    if (storage.platform === "tauri" && !bundle.path) return;
+
+    writeAppSession({
+      lastProjectPath: bundle.path,
+      lastProjectTitle: bundle.metadata.title,
+      lastOpenedAt: new Date().toISOString(),
+    });
+  }, [bundle.metadata.title, bundle.path, storage.platform]);
 
   useEffect(() => {
     if (storage.platform !== "tauri" || !bundle.path) return;
@@ -314,6 +374,9 @@ export function BeastApp() {
 
   async function handleNewProject() {
     setBundle(storage.createProject({ title: "Untitled" }));
+    if (storage.platform === "tauri") {
+      writeAppSession({});
+    }
     setSaveStatus({
       tone: "pending",
       message: storage.platform === "web" ? "New project pending autosave" : "New unsaved project",
@@ -330,6 +393,11 @@ export function BeastApp() {
       setSavingStatus("Opening project");
       const project = await storage.loadProject();
       setBundle(project);
+      writeAppSession({
+        lastProjectPath: project.path,
+        lastProjectTitle: project.metadata.title,
+        lastOpenedAt: new Date().toISOString(),
+      });
       setSavedStatus("Project opened");
     } catch (error) {
       setErrorStatus(error);
@@ -342,6 +410,11 @@ export function BeastApp() {
       const result = await storage.saveProject(bundle);
       if (result.path) {
         updateBundle((current) => ({ ...current, path: result.path }));
+        writeAppSession({
+          lastProjectPath: result.path,
+          lastProjectTitle: bundle.metadata.title,
+          lastOpenedAt: new Date().toISOString(),
+        });
       }
       setSavedStatus(result.path ? "Saved to folder" : "Saved");
     } catch (error) {
@@ -354,7 +427,14 @@ export function BeastApp() {
       setSavingStatus(storage.platform === "web" ? "Exporting project" : "Saving project");
       const result = await storage.saveProject(bundle, storage.platform === "web" ? { kind: "download" } : { kind: "path" });
       if (result.files) downloadFiles(result.files);
-      if (result.path) updateBundle((current) => ({ ...current, path: result.path }));
+      if (result.path) {
+        updateBundle((current) => ({ ...current, path: result.path }));
+        writeAppSession({
+          lastProjectPath: result.path,
+          lastProjectTitle: bundle.metadata.title,
+          lastOpenedAt: new Date().toISOString(),
+        });
+      }
       setSavedStatus(storage.platform === "web" ? "Exported" : "Saved to folder");
     } catch (error) {
       setErrorStatus(error);
@@ -579,6 +659,9 @@ export function BeastApp() {
             activeContext={activeContext}
             onMetadataChange={updateMetadata}
             onModeChange={setRightPanelMode}
+            onError={setErrorStatus}
+            projectPath={bundle.path}
+            storagePlatform={storage.platform}
           />
         ) : null}
       </section>
@@ -654,6 +737,9 @@ function RightPanel({
   activeContext,
   onMetadataChange,
   onModeChange,
+  onError,
+  projectPath,
+  storagePlatform,
 }: {
   blocks: ScreenplayBlock[];
   mode: RightPanelMode;
@@ -664,6 +750,9 @@ function RightPanel({
   activeContext: WritingContext;
   onMetadataChange: (updater: (current: ProjectMetadata) => ProjectMetadata) => void;
   onModeChange: (mode: RightPanelMode) => void;
+  onError: (error: unknown) => void;
+  projectPath?: string;
+  storagePlatform: StorageAdapter["platform"];
 }) {
   const activeMode = rightPanelModes.find((panelMode) => panelMode.mode === mode) ?? rightPanelModes[0];
   const ActiveIcon = activeMode.icon;
@@ -701,7 +790,10 @@ function RightPanel({
         blocks={blocks}
         metadata={metadata}
         mode={activeMode.mode}
+        onError={onError}
         onMetadataChange={onMetadataChange}
+        projectPath={projectPath}
+        storagePlatform={storagePlatform}
         title={title}
       />
     </aside>
@@ -713,14 +805,20 @@ function RightPanelContent({
   blocks,
   metadata,
   mode,
+  onError,
   onMetadataChange,
+  projectPath,
+  storagePlatform,
   title,
 }: {
   activeContext: WritingContext;
   blocks: ScreenplayBlock[];
   metadata: ProjectMetadata;
   mode: RightPanelMode;
+  onError: (error: unknown) => void;
   onMetadataChange: (updater: (current: ProjectMetadata) => ProjectMetadata) => void;
+  projectPath?: string;
+  storagePlatform: StorageAdapter["platform"];
   title: string;
 }) {
   switch (mode) {
@@ -733,7 +831,17 @@ function RightPanelContent({
     case "images":
       return <ImagesPanel activeContext={activeContext} metadata={metadata} onMetadataChange={onMetadataChange} />;
     case "research":
-      return <ResearchPanel activeContext={activeContext} metadata={metadata} onMetadataChange={onMetadataChange} projectTitle={title} />;
+      return (
+        <ResearchPanel
+          activeContext={activeContext}
+          metadata={metadata}
+          onError={onError}
+          onMetadataChange={onMetadataChange}
+          projectPath={projectPath}
+          projectTitle={title}
+          storagePlatform={storagePlatform}
+        />
+      );
     default:
       return <PreviewPanel blocks={blocks} title={title} />;
   }
@@ -1145,17 +1253,25 @@ function ImagesPanel({
 function ResearchPanel({
   activeContext,
   metadata,
+  onError,
   onMetadataChange,
+  projectPath,
   projectTitle,
+  storagePlatform,
 }: {
   activeContext: WritingContext;
   metadata: ProjectMetadata;
+  onError: (error: unknown) => void;
   onMetadataChange: (updater: (current: ProjectMetadata) => ProjectMetadata) => void;
+  projectPath?: string;
   projectTitle: string;
+  storagePlatform: StorageAdapter["platform"];
 }) {
   const context = getPanelContext(metadata, activeContext.key);
   const viewMode = metadata.panels.preferences.researchView;
   const [draggingStackId, setDraggingStackId] = useState<string | null>(null);
+  const [attachingItemId, setAttachingItemId] = useState<string | null>(null);
+  const [referenceForm, setReferenceForm] = useState<{ stackId: string; itemId: string; name: string; source: string } | null>(null);
 
   function updateContext(updater: (current: PanelContextMetadata) => PanelContextMetadata) {
     onMetadataChange((current) => updatePanelContext(current, activeContext.key, updater));
@@ -1324,6 +1440,93 @@ function ResearchPanel({
     }));
   }
 
+  function addAsset(stackId: string, itemId: string, asset: ResearchAsset) {
+    const now = new Date().toISOString();
+    updateContext((current) => ({
+      ...current,
+      researchStacks: current.researchStacks.map((stack) =>
+        stack.id === stackId
+          ? {
+              ...stack,
+              updatedAt: now,
+              items: stack.items.map((item) =>
+                item.id === itemId
+                  ? {
+                      ...item,
+                      assets: [...researchItemAssets(item), asset],
+                      updatedAt: now,
+                    }
+                  : item,
+              ),
+            }
+          : stack,
+      ),
+    }));
+  }
+
+  function deleteAsset(stackId: string, itemId: string, assetId: string) {
+    const now = new Date().toISOString();
+    updateContext((current) => ({
+      ...current,
+      researchStacks: current.researchStacks.map((stack) =>
+        stack.id === stackId
+          ? {
+              ...stack,
+              updatedAt: now,
+              items: stack.items.map((item) =>
+                item.id === itemId
+                  ? {
+                      ...item,
+                      assets: researchItemAssets(item).filter((asset) => asset.id !== assetId),
+                      updatedAt: now,
+                    }
+                  : item,
+              ),
+            }
+          : stack,
+      ),
+    }));
+  }
+
+  async function attachProjectFile(stackId: string, itemId: string) {
+    if (!projectPath) {
+      onError("Save this project before attaching files.");
+      return;
+    }
+
+    try {
+      setAttachingItemId(itemId);
+      const [{ open }, { invoke }] = await Promise.all([import("@tauri-apps/plugin-dialog"), import("@tauri-apps/api/core")]);
+      const selected = await open({
+        title: "Attach Research File",
+        directory: false,
+        multiple: false,
+      });
+      const sourcePath = Array.isArray(selected) ? selected[0] : selected;
+      if (!sourcePath) return;
+
+      const asset = await invoke<ResearchAsset>("copy_research_asset", {
+        projectPath,
+        researchItemId: itemId,
+        sourcePath,
+      });
+      addAsset(stackId, itemId, normalizeResearchAsset(asset) ?? asset);
+    } catch (error) {
+      onError(error);
+    } finally {
+      setAttachingItemId(null);
+    }
+  }
+
+  function submitReference(event: ReactFormEvent<HTMLFormElement>, stackId: string, itemId: string) {
+    event.preventDefault();
+    const source = referenceForm?.source.trim() ?? "";
+    if (!source) return;
+
+    addAsset(stackId, itemId, createExternalResearchAsset(source, referenceForm?.name));
+    setReferenceForm(null);
+  }
+
   function deleteItem(stackId: string, itemId: string) {
     updateContext((current) => ({
       ...current,
@@ -1442,15 +1645,74 @@ function ResearchPanel({
                             onChange={(event) => updateItem(stack.id, item.id, "note", event.currentTarget.value)}
                           />
                           {item.quote ? <blockquote className="beast-capture-quote">{item.quote}</blockquote> : null}
+                          <div className="beast-card-actions">
+                            {storagePlatform === "tauri" ? (
+                              <button
+                                className="beast-panel-button"
+                                type="button"
+                                disabled={attachingItemId === item.id}
+                                onClick={() => void attachProjectFile(stack.id, item.id)}
+                              >
+                                <Paperclip size={14} aria-hidden="true" />
+                                {attachingItemId === item.id ? "Attaching" : "Attach File"}
+                              </button>
+                            ) : (
+                              <button
+                                className="beast-panel-button"
+                                type="button"
+                                onClick={() =>
+                                  setReferenceForm({
+                                    stackId: stack.id,
+                                    itemId: item.id,
+                                    name: "",
+                                    source: "",
+                                  })
+                                }
+                              >
+                                <Paperclip size={14} aria-hidden="true" />
+                                Add Reference
+                              </button>
+                            )}
+                          </div>
+                          {referenceForm?.stackId === stack.id && referenceForm.itemId === item.id ? (
+                            <form className="beast-asset-reference-form" onSubmit={(event) => submitReference(event, stack.id, item.id)}>
+                              <input
+                                className="beast-panel-input"
+                                value={referenceForm.name}
+                                aria-label="Attachment name"
+                                placeholder="Attachment name"
+                                onChange={(event) => {
+                                  const value = event.currentTarget.value;
+                                  setReferenceForm((current) => (current ? { ...current, name: value } : current));
+                                }}
+                              />
+                              <input
+                                className="beast-panel-input"
+                                value={referenceForm.source}
+                                aria-label="Attachment URL or path"
+                                placeholder="https://example.com/file.pdf or /Users/name/file.pdf"
+                                onChange={(event) => {
+                                  const value = event.currentTarget.value;
+                                  setReferenceForm((current) => (current ? { ...current, source: value } : current));
+                                }}
+                              />
+                              <div className="beast-card-actions">
+                                <button className="beast-panel-button" type="submit">
+                                  <Plus size={14} aria-hidden="true" />
+                                  Add
+                                </button>
+                                <button className="beast-panel-button" type="button" onClick={() => setReferenceForm(null)}>
+                                  Cancel
+                                </button>
+                              </div>
+                            </form>
+                          ) : null}
                           {researchItemAssets(item).length > 0 ? (
-                            <div className="beast-capture-assets">
-                              {researchItemAssets(item).map((asset) => (
-                                <a key={asset} className="beast-source-link" href={researchAssetHref(asset)} target="_blank" rel="noreferrer">
-                                  <ExternalLink size={13} aria-hidden="true" />
-                                  {asset.split("/").pop() ?? "Asset"}
-                                </a>
-                              ))}
-                            </div>
+                            <ResearchAssetGallery
+                              assets={researchItemAssets(item)}
+                              onDelete={(assetId) => deleteAsset(stack.id, item.id, assetId)}
+                              projectPath={projectPath}
+                            />
                           ) : null}
                           {item.source.trim() ? (
                             <a className="beast-source-link" href={researchItemHref(item)} target="_blank" rel="noreferrer">
@@ -1534,6 +1796,104 @@ function ResearchStackSummary({ stack }: { stack: ResearchStack }) {
   );
 }
 
+function ResearchAssetGallery({
+  assets,
+  onDelete,
+  projectPath,
+}: {
+  assets: ResearchAsset[];
+  onDelete: (assetId: string) => void;
+  projectPath?: string;
+}) {
+  const [imageDimensions, setImageDimensions] = useState<Record<string, { width: number; height: number }>>({});
+  const photos = useMemo<ResearchAssetPhoto[]>(
+    () =>
+      assets.map((asset) => {
+        const assetHref = researchAssetHref(asset, projectPath);
+        const dimensions = researchAssetDimensions(asset, imageDimensions[asset.id]);
+
+        return {
+          key: asset.id,
+          src: asset.kind === "image" ? assetHref : TRANSPARENT_IMAGE_SRC,
+          width: dimensions.width,
+          height: dimensions.height,
+          alt: asset.name || "Attachment",
+          title: assetLabel(asset),
+          asset,
+          assetHref,
+        };
+      }),
+    [assets, imageDimensions, projectPath],
+  );
+
+  function rememberImageDimensions(assetId: string, width: number, height: number) {
+    if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return;
+
+    setImageDimensions((current) => {
+      const existing = current[assetId];
+      if (existing?.width === width && existing.height === height) return current;
+      return {
+        ...current,
+        [assetId]: { width, height },
+      };
+    });
+  }
+
+  return (
+    <div className="beast-asset-list">
+      <RowsPhotoAlbum<ResearchAssetPhoto>
+        photos={photos}
+        spacing={8}
+        padding={0}
+        targetRowHeight={100}
+        rowConstraints={{ singleRowMaxHeight: 100 }}
+        componentsProps={{
+          container: { className: "beast-asset-mosaic" },
+          wrapper: ({ photo }) => ({
+            className: `beast-asset-mosaic-photo beast-asset-mosaic-photo-${photo.asset.kind}`,
+            title: assetLabel(photo.asset),
+          }),
+          image: ({ photo }) => ({
+            onLoad: (event) => {
+              if (photo.asset.kind !== "image") return;
+              rememberImageDimensions(photo.asset.id, event.currentTarget.naturalWidth, event.currentTarget.naturalHeight);
+            },
+          }),
+        }}
+        render={{
+          image: (props, { photo }) => {
+            if (photo.asset.kind === "image") {
+              return <img {...props} className={`${props.className ?? ""} beast-asset-mosaic-image`} />;
+            }
+
+            const AssetIcon = photo.asset.kind === "pdf" ? FileText : FileIcon;
+
+            return (
+              <div className={`${props.className ?? ""} beast-asset-mosaic-file`} style={props.style} aria-label={photo.alt}>
+                <AssetIcon size={30} aria-hidden="true" />
+              </div>
+            );
+          },
+          extras: (_, { photo }) => (
+            <div className="beast-asset-thumb-actions">
+              <a
+                className="beast-asset-icon-link"
+                href={photo.assetHref}
+                target="_blank"
+                rel="noreferrer"
+                aria-label={`Open ${photo.asset.name || "Attachment"}`}
+              >
+                <ExternalLink size={14} aria-hidden="true" />
+              </a>
+              <IconButton label="Delete Attachment" icon={Trash2} onClick={() => onDelete(photo.asset.id)} />
+            </div>
+          ),
+        }}
+      />
+    </div>
+  );
+}
+
 function normalizeBridgeResearchItem(item: unknown): ResearchItem | undefined {
   if (!isRecord(item) || typeof item.id !== "string") return undefined;
   const now = new Date().toISOString();
@@ -1545,7 +1905,7 @@ function normalizeBridgeResearchItem(item: unknown): ResearchItem | undefined {
     source: typeof item.source === "string" ? item.source : "",
     note: typeof item.note === "string" ? item.note : "",
     quote: typeof item.quote === "string" ? item.quote : undefined,
-    assets: Array.isArray(item.assets) ? item.assets.filter((asset): asset is string => typeof asset === "string") : [],
+    assets: Array.isArray(item.assets) ? item.assets.map(normalizeResearchAsset).filter(isDefined) : [],
     createdAt: typeof item.createdAt === "string" ? item.createdAt : now,
     updatedAt: typeof item.updatedAt === "string" ? item.updatedAt : now,
   };
@@ -1744,14 +2104,153 @@ function researchItemHref(item: ResearchItem): string {
   return source;
 }
 
-function researchItemAssets(item: ResearchItem): string[] {
-  return Array.isArray(item.assets) ? item.assets : [];
+function researchItemAssets(item: ResearchItem): ResearchAsset[] {
+  return Array.isArray(item.assets) ? item.assets.map(normalizeResearchAsset).filter(isDefined) : [];
 }
 
-function researchAssetHref(asset: string): string {
-  if (/^file:\/\//i.test(asset) || /^https?:\/\//i.test(asset)) return asset;
-  if (asset.startsWith("/")) return `file://${asset}`;
-  return asset;
+function researchAssetHref(asset: ResearchAsset, projectPath?: string): string {
+  const source = asset.source.trim();
+
+  if (asset.storage === "project" && projectPath && !/^(?:data|file|https?):/i.test(source) && !source.startsWith("/")) {
+    return localFileHref(joinPath(projectPath, source));
+  }
+
+  if (/^(?:data|https?):/i.test(source)) return source;
+  if (/^file:\/\//i.test(source)) return isTauriRuntime() ? convertFileSrc(fileUrlToPath(source)) : source;
+  if (source.startsWith("/")) return localFileHref(source);
+  return source;
+}
+
+function localFileHref(path: string): string {
+  if (isTauriRuntime()) return convertFileSrc(path);
+  return encodeURI(`file://${path}`);
+}
+
+function fileUrlToPath(value: string): string {
+  try {
+    return decodeURIComponent(new URL(value).pathname);
+  } catch {
+    return safeDecodeURIComponent(value.replace(/^file:\/\//i, ""));
+  }
+}
+
+function normalizeResearchAsset(asset: unknown): ResearchAsset | undefined {
+  if (typeof asset === "string") {
+    const source = asset.trim();
+    if (!source) return undefined;
+    const name = assetNameFromSource(source);
+
+    return {
+      id: deterministicAssetId(source),
+      name,
+      kind: inferResearchAssetKind(name),
+      source,
+      storage: "project",
+      createdAt: new Date().toISOString(),
+    };
+  }
+
+  if (!isRecord(asset) || typeof asset.source !== "string" || !asset.source.trim()) return undefined;
+  const source = asset.source.trim();
+  const name = typeof asset.name === "string" && asset.name.trim() ? asset.name.trim() : assetNameFromSource(source);
+  const mimeType = typeof asset.mimeType === "string" && asset.mimeType.trim() ? asset.mimeType.trim() : undefined;
+
+  return {
+    id: typeof asset.id === "string" && asset.id.trim() ? asset.id.trim() : deterministicAssetId(source),
+    name,
+    kind:
+      asset.kind === "image" || asset.kind === "pdf" || asset.kind === "file"
+        ? asset.kind
+        : inferResearchAssetKind(`${name} ${source}`, mimeType),
+    source,
+    storage: asset.storage === "external" ? "external" : "project",
+    mimeType,
+    size: typeof asset.size === "number" && Number.isFinite(asset.size) && asset.size >= 0 ? Math.round(asset.size) : undefined,
+    createdAt: typeof asset.createdAt === "string" ? asset.createdAt : new Date().toISOString(),
+  };
+}
+
+function createExternalResearchAsset(source: string, nameInput: string | undefined): ResearchAsset {
+  const name = nameInput?.trim() || assetNameFromSource(source);
+
+  return {
+    id: createId("asset"),
+    name,
+    kind: inferResearchAssetKind(`${name} ${source}`),
+    source,
+    storage: "external",
+    createdAt: new Date().toISOString(),
+  };
+}
+
+function inferResearchAssetKind(name: string, mimeType?: string): ResearchAsset["kind"] {
+  const normalizedName = name.toLowerCase();
+  const normalizedMime = mimeType?.toLowerCase() ?? "";
+
+  if (
+    normalizedMime.startsWith("image/") ||
+    normalizedName.includes("data:image/") ||
+    /\.(?:avif|gif|jpe?g|png|webp)(?:$|[\s?#])/i.test(normalizedName)
+  ) {
+    return "image";
+  }
+
+  if (normalizedMime === "application/pdf" || normalizedName.includes("data:application/pdf") || /\.pdf(?:$|[\s?#])/i.test(normalizedName)) {
+    return "pdf";
+  }
+
+  return "file";
+}
+
+function assetNameFromSource(source: string): string {
+  const withoutQuery = source.split(/[?#]/, 1)[0] ?? source;
+  const segments = withoutQuery.split(/[\\/]/).filter(Boolean);
+  return safeDecodeURIComponent(segments.at(-1) ?? "Attachment");
+}
+
+function deterministicAssetId(source: string): string {
+  let hash = 0;
+  for (let index = 0; index < source.length; index += 1) {
+    hash = (hash * 31 + source.charCodeAt(index)) >>> 0;
+  }
+  return `asset-${hash.toString(36)}`;
+}
+
+function safeDecodeURIComponent(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+function joinPath(root: string, child: string): string {
+  return `${root.replace(/\/+$/, "")}/${child.replace(/^\/+/, "")}`;
+}
+
+function researchAssetDimensions(
+  asset: ResearchAsset,
+  measuredDimensions: { width: number; height: number } | undefined,
+): { width: number; height: number } {
+  if (asset.kind === "image") return measuredDimensions ?? { width: 100, height: 75 };
+  if (asset.kind === "pdf") return { width: 76, height: 100 };
+  return { width: 88, height: 88 };
+}
+
+function assetLabel(asset: ResearchAsset): string {
+  const parts = [
+    asset.name || "Attachment",
+    asset.kind.toUpperCase(),
+    asset.storage === "project" ? "Project file" : "External",
+  ];
+  if (asset.size) parts.push(formatFileSize(asset.size));
+  return parts.join(" · ");
+}
+
+function formatFileSize(size: number): string {
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${Math.round(size / 1024)} KB`;
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function reorderById<T extends { id: string }>(items: T[], draggedId: string, targetId: string): T[] {
@@ -1825,17 +2324,46 @@ function describeProjectLocation(
   };
 }
 
+function readAppSession(): AppSessionState {
+  try {
+    const stored = globalThis.localStorage?.getItem(APP_SESSION_KEY);
+    if (!stored) return {};
+    const parsed = JSON.parse(stored) as unknown;
+    if (!isRecord(parsed)) return {};
+
+    return {
+      lastProjectPath: typeof parsed.lastProjectPath === "string" && parsed.lastProjectPath ? parsed.lastProjectPath : undefined,
+      lastProjectTitle: typeof parsed.lastProjectTitle === "string" && parsed.lastProjectTitle ? parsed.lastProjectTitle : undefined,
+      lastOpenedAt: typeof parsed.lastOpenedAt === "string" && parsed.lastOpenedAt ? parsed.lastOpenedAt : undefined,
+    };
+  } catch {
+    return {};
+  }
+}
+
+function writeAppSession(session: AppSessionState) {
+  try {
+    globalThis.localStorage?.setItem(APP_SESSION_KEY, JSON.stringify(session));
+  } catch {
+    // Session restore is opportunistic; project files remain the source of truth.
+  }
+}
+
 function createId(prefix: string): string {
   const random = globalThis.crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2);
   return `${prefix}-${random}`;
 }
 
 function createRuntimeStorage(): StorageAdapter {
-  if (typeof window !== "undefined" && window.__TAURI_INTERNALS__) {
+  if (isTauriRuntime()) {
     return createTauriStorageAdapter();
   }
 
   return createWebStorageAdapter();
+}
+
+function isTauriRuntime(): boolean {
+  return typeof window !== "undefined" && Boolean(window.__TAURI_INTERNALS__);
 }
 
 function downloadFiles(files: ExportFile[]) {
@@ -1856,6 +2384,10 @@ function errorMessage(error: unknown): string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function isDefined<T>(value: T | undefined): value is T {
+  return value !== undefined;
 }
 
 function clampRightPanelWidth(width: number): number {
