@@ -27,6 +27,8 @@ import {
   Bot,
   Bold,
   AlignCenter,
+  ChevronDown,
+  ChevronUp,
   Clapperboard,
   Download,
   Eye,
@@ -1396,6 +1398,7 @@ function ResearchPanel({
   const [draggingStackId, setDraggingStackId] = useState<string | null>(null);
   const [attachingItemId, setAttachingItemId] = useState<string | null>(null);
   const [referenceForm, setReferenceForm] = useState<{ stackId: string; itemId: string; name: string; source: string } | null>(null);
+  const [collapsedStackIds, setCollapsedStackIds] = useState<Set<string>>(() => new Set());
 
   function updateContext(updater: (current: PanelContextMetadata) => PanelContextMetadata) {
     onMetadataChange((current) => updatePanelContext(current, activeContext.key, updater));
@@ -1447,10 +1450,15 @@ function ResearchPanel({
   }
 
   function deleteStack(stackId: string) {
+    setCollapsedStackIds((current) => withoutSetValue(current, stackId));
     updateContext((current) => ({
       ...current,
       researchStacks: current.researchStacks.filter((stack) => stack.id !== stackId),
     }));
+  }
+
+  function toggleStackCollapsed(stackId: string) {
+    setCollapsedStackIds((current) => toggleSetValue(current, stackId));
   }
 
   function startStackDrag(event: ReactDragEvent<HTMLButtonElement>, stackId: string) {
@@ -1684,11 +1692,15 @@ function ResearchPanel({
         </div>
       ) : (
         <div className={viewMode === "grid" ? "beast-stack-grid" : "beast-panel-list"}>
-          {context.researchStacks.map((stack) => (
+          {context.researchStacks.map((stack) => {
+            const isStackCollapsed = collapsedStackIds.has(stack.id);
+            const StackToggleIcon = isStackCollapsed ? ChevronDown : ChevronUp;
+
+            return (
             <section
               className={`${viewMode === "grid" ? "beast-grid-card beast-stack-tile" : "beast-panel-card beast-research-stack"} ${
                 draggingStackId === stack.id ? "is-dragging" : ""
-              }`}
+              } ${viewMode !== "grid" && isStackCollapsed ? "is-collapsed" : ""}`}
               data-stack-id={stack.id}
               key={stack.id}
               onDragEnter={() => moveDraggedStack(stack.id)}
@@ -1720,11 +1732,20 @@ function ResearchPanel({
                     onChange={(event) => updateStackTitle(stack.id, event.currentTarget.value)}
                   />
                 )}
+                {viewMode !== "grid" ? <span className="beast-stack-count-badge">({stack.items.length})</span> : null}
+                {viewMode !== "grid" ? (
+                  <IconButton
+                    label={isStackCollapsed ? "Expand Stack" : "Collapse Stack"}
+                    icon={StackToggleIcon}
+                    pressed={!isStackCollapsed}
+                    onClick={() => toggleStackCollapsed(stack.id)}
+                  />
+                ) : null}
                 <IconButton label="Delete Stack" icon={Trash2} onClick={() => deleteStack(stack.id)} />
               </div>
               {viewMode === "grid" ? (
                 <ResearchStackSummary stack={stack} />
-              ) : (
+              ) : isStackCollapsed ? null : (
                 <>
                   <div className="beast-card-actions">
                     <button className="beast-panel-button" type="button" onClick={() => addItem(stack.id, "website")}>
@@ -1861,7 +1882,8 @@ function ResearchPanel({
                 </>
               )}
             </section>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>
@@ -2559,6 +2581,23 @@ function reorderById<T extends { id: string }>(items: T[], draggedId: string, ta
 
   nextItems.splice(targetIndex, 0, dragged);
   return nextItems;
+}
+
+function toggleSetValue(current: Set<string>, value: string): Set<string> {
+  const next = new Set(current);
+  if (next.has(value)) {
+    next.delete(value);
+  } else {
+    next.add(value);
+  }
+  return next;
+}
+
+function withoutSetValue(current: Set<string>, value: string): Set<string> {
+  if (!current.has(value)) return current;
+  const next = new Set(current);
+  next.delete(value);
+  return next;
 }
 
 function formatTimestamp(value: string): string {

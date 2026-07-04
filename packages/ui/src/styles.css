@@ -438,6 +438,22 @@ body.is-resizing-right-panel {
   flex: 1;
 }
 
+.beast-stack-count-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  min-width: 34px;
+  height: 28px;
+  border: 1px solid var(--beast-border);
+  padding: 0 6px;
+  color: var(--beast-muted);
+  background: var(--beast-panel);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+}
+
 .beast-panel-input,
 .beast-panel-textarea {
   width: 100%;
